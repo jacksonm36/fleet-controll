@@ -22,8 +22,14 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# curl | bash leaves BASH_SOURCE unset under bash -u
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+	SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+	REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+else
+	SCRIPT_DIR=""
+	REPO_ROOT=""
+fi
 
 # Injected when served from Fleet API (see apps/api agent-install route)
 FLEET_CENTRAL_DEFAULT="${FLEET_CENTRAL_DEFAULT:-}"
@@ -120,9 +126,10 @@ install_agent_binary() {
 	need_cmd git
 	local clone_dir repo_url
 	clone_dir="$(mktemp -d)"
-	# https://raw.githubusercontent.com/ORG/REPO/REF → https://github.com/ORG/REPO.git
-	repo_url="$(printf '%s\n' "$GITHUB_RAW" | sed -E 's|https://raw\\.githubusercontent\\.com/([^/]+)/([^/]+)/.*|https://github.com/\\1/\\2.git|')"
-	[[ -n "$repo_url" ]] || repo_url="https://github.com/jacksonm36/fleet-controll.git"
+	repo_url="https://github.com/jacksonm36/fleet-controll.git"
+	if [[ "$GITHUB_RAW" =~ https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/ ]]; then
+		repo_url="https://github.com/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}.git"
+	fi
 	git clone --depth 1 "$repo_url" "$clone_dir"
 	FLEET_REPO="$clone_dir" SKIP_SYSTEM_DEPS="${SKIP_SYSTEM_DEPS:-0}" \
 		bash "$clone_dir/scripts/rust-agent-setup-wsl.sh"
