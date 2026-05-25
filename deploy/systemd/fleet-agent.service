@@ -1,0 +1,15 @@
+[Unit]
+Description=Fleet Patch Control Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/fleet-agent -central=http://127.0.0.1:4000
+Environment=FLEET_AGENT_TOKEN_FILE=/etc/fleet/agent.token
+Environment=FLEET_USE_SUDO=true
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

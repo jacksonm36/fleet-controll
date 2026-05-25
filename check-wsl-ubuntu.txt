@@ -1,0 +1,8 @@
+=== Ubuntu-22.04 (PRETTY_NAME=Ubuntu 22.04.5 LTS) ===
+user: jackson home: /home/jackson
+fleet-agent: -rwxr-xr-x 1 jackson jackson 6975640 May 18 02:09 /home/jackson/.local/bin/fleet-agent
+Fleet control-plane agent ÔÇö enroll, heartbeat, inventory, long-poll jobs
+
+Usage: fleet-agent [OPTIONS]
+rust/cargo: MISSING
+token file: none

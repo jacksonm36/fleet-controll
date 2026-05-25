@@ -1,0 +1,159 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  OPERATOR
+  VIEWER
+}
+
+enum AgentStatus {
+  ONLINE
+  OFFLINE
+}
+
+enum ServiceKind {
+  systemd
+  windows_service
+}
+
+enum JobType {
+  PACKAGE_UPGRADE
+  PACKAGE_REFRESH
+  SERVICE_RESTART
+  SERVICE_STOP
+  SERVICE_START
+  CROWDSEC_DECISION_ADD
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  role         Role     @default(OPERATOR)
+  createdAt    DateTime @default(now())
+}
+
+model EnrollmentToken {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdBy String?
+  createdAt DateTime @default(now())
+}
+
+model Agent {
+  id           String       @id @default(cuid())
+  hostname     String
+  osType       String
+  osDetail     String?
+  labels       Json?
+  version      String?
+  lastSeenAt   DateTime?
+  status       AgentStatus  @default(OFFLINE)
+  rebootRequired Boolean    @default(false)
+  crowdsecInstalled Boolean @default(false)
+
+  credential          AgentCredential?
+  packages            PackageRecord[]
+  services            ServiceRecord[]
+  jobs                Job[]
+  crowdSecSnapshots   CrowdSecSnapshot[]
+}
+
+model AgentCredential {
+  id         String @id @default(cuid())
+  agentId    String @unique
+  agent      Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  secretHash String
+  createdAt  DateTime @default(now())
+}
+
+model PackageRecord {
+  id        String   @id @default(cuid())
+  agentId   String
+  agent     Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  name      String
+  version   String
+  manager   String
+  source    String?
+  updatedAt DateTime @updatedAt
+
+  @@unique([agentId, name, manager])
+  @@index([agentId])
+}
+
+model ServiceRecord {
+  id        String      @id @default(cuid())
+  agentId   String
+  agent     Agent       @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  name      String
+  kind      ServiceKind
+  state     String
+  enabled   Boolean?
+  updatedAt DateTime    @updatedAt
+
+  @@unique([agentId, name, kind])
+  @@index([agentId])
+}
+
+model Job {
+  id           String    @id @default(cuid())
+  agentId      String
+  agent        Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  type         JobType
+  payload      Json
+  status       JobStatus @default(QUEUED)
+  createdAt    DateTime  @default(now())
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  errorMessage String?
+
+  logs JobLogChunk[]
+
+  @@index([agentId, status])
+}
+
+model JobLogChunk {
+  id        String   @id @default(cuid())
+  jobId     String
+  job       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  seq       Int
+  message   String
+  createdAt DateTime @default(now())
+
+  @@unique([jobId, seq])
+  @@index([jobId])
+}
+
+model CrowdSecSnapshot {
+  id         String   @id @default(cuid())
+  agentId    String   @unique
+  agent      Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  payload    Json
+  capturedAt DateTime @default(now())
+}
+
+model AuditEvent {
+  id        String   @id @default(cuid())
+  actorId   String?
+  action    String
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}

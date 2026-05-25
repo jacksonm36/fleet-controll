@@ -1,0 +1,7 @@
+tr: extra operand ÔÇś"ÔÇÖ
+Try 'tr --help' for more information.
+=== Debian () ===
+user: jackson home: /home/jackson
+fleet-agent: MISSING
+rust/cargo: MISSING
+token file: none

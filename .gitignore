@@ -1,0 +1,13 @@
+node_modules
+dist
+.next
+.turbo
+*.log
+.env
+.env.local
+.DS_Store
+coverage
+*.exe
+/agent/agent
+
+/rust-agent/target
