@@ -212,7 +212,8 @@ export async function agentV1Routes(app: FastifyInstance) {
           });
           return updated;
         }
-        await new Promise((r) => setTimeout(r, 900));
+        const pollMs = Number(process.env.AGENT_JOB_POLL_MS ?? 1200);
+        await new Promise((r) => setTimeout(r, pollMs));
       }
       return reply.code(204).send();
     },

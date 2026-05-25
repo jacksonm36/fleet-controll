@@ -1,6 +1,7 @@
 import { prisma } from "@fleet/db";
 import type { FastifyInstance } from "fastify";
-import { requireUser } from "../middleware/auth.js";
+import { assertOperator, requireUser } from "../middleware/auth.js";
+import { disconnectAgent } from "../lib/agent-sockets.js";
 
 export async function agentsRoutes(app: FastifyInstance) {
   app.get(
@@ -29,11 +30,42 @@ export async function agentsRoutes(app: FastifyInstance) {
       const agent = await prisma.agent.findUnique({
         where: { id: req.params.id },
         include: {
-          _count: { select: { packages: true, services: true } },
+          _count: { select: { packages: true, services: true, jobs: true } },
         },
       });
       if (!agent) return reply.code(404).send({ error: "not_found" });
-      return agent;
+      const threshold = Date.now() - 120_000;
+      return {
+        ...agent,
+        online:
+          !!agent.lastSeenAt &&
+          agent.lastSeenAt.getTime() >= threshold &&
+          agent.status === "ONLINE",
+      };
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>(
+    "/:id",
+    { preHandler: requireUser },
+    async (req, reply) => {
+      if (!assertOperator(req, reply)) return;
+      const agent = await prisma.agent.findUnique({
+        where: { id: req.params.id },
+      });
+      if (!agent) return reply.code(404).send({ error: "not_found" });
+
+      disconnectAgent(agent.id);
+      await prisma.agent.delete({ where: { id: agent.id } });
+      await prisma.auditEvent.create({
+        data: {
+          actorId: (req.user as { sub: string }).sub,
+          action: "agent_deleted",
+          meta: { agentId: agent.id, hostname: agent.hostname },
+        },
+      });
+
+      return { ok: true };
     },
   );
 

@@ -81,6 +81,8 @@ model AgentCredential {
   agent      Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
   secretHash String
   createdAt  DateTime @default(now())
+
+  @@index([secretHash])
 }
 
 model PackageRecord {

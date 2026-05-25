@@ -15,6 +15,12 @@ export function unregisterAgentSocket(agentId: string, socket: AgentSocket): voi
   if (sockets.get(agentId) === socket) sockets.delete(agentId);
 }
 
+export function disconnectAgent(agentId: string): void {
+  const s = sockets.get(agentId);
+  s?.close?.();
+  sockets.delete(agentId);
+}
+
 export function notifyAgent(agentId: string, payload: unknown): void {
   const s = sockets.get(agentId);
   if (s) {

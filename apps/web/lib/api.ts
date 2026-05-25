@@ -2,13 +2,16 @@ import { clearToken, getToken } from "./auth";
 
 function apiErrorBody(text: string): string {
   try {
-    const parsed = JSON.parse(text) as { error?: unknown };
-    if (
-      parsed &&
-      typeof parsed === "object" &&
-      typeof parsed.error === "string"
-    ) {
-      return parsed.error;
+    const parsed = JSON.parse(text) as {
+      error?: unknown;
+      message?: unknown;
+    };
+    if (parsed && typeof parsed === "object") {
+      if (typeof parsed.error === "string" && parsed.error !== "Bad Request") {
+        return parsed.error;
+      }
+      if (typeof parsed.message === "string") return parsed.message;
+      if (typeof parsed.error === "string") return parsed.error;
     }
   } catch {
     /* ignore */
@@ -27,7 +30,11 @@ export async function apiFetch<T>(
 ): Promise<T> {
   const token = getToken();
   const headers = new Headers(init.headers);
-  headers.set("Content-Type", "application/json");
+  const hasBody =
+    init.body !== undefined && init.body !== null && init.body !== "";
+  if (hasBody && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
   const res = await fetch(apiUrl(path), { ...init, headers });

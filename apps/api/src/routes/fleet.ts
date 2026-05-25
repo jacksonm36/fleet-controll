@@ -7,42 +7,31 @@ export async function fleetRoutes(app: FastifyInstance) {
     "/summary",
     { preHandler: requireUser },
     async () => {
-      const now = Date.now();
-      const threshold = now - 120_000;
-      const agents = await prisma.agent.findMany({
-        select: {
-          id: true,
-          lastSeenAt: true,
-          status: true,
-          rebootRequired: true,
-          crowdsecInstalled: true,
-        },
-      });
-      const agentCount = agents.length;
-      let onlineCount = 0;
-      let staleCount = 0;
-      let rebootRequiredCount = 0;
-      let crowdsecHosts = 0;
-      for (const a of agents) {
-        const seen = a.lastSeenAt?.getTime() ?? 0;
-        const online =
-          seen >= threshold && a.status === "ONLINE";
-        if (online) onlineCount++;
-        else staleCount++;
-        if (a.rebootRequired) rebootRequiredCount++;
-        if (a.crowdsecInstalled) crowdsecHosts++;
-      }
-
-      const pendingJobs = await prisma.job.count({
-        where: { status: { in: ["QUEUED", "RUNNING"] } },
-      });
-
-      const packagesTracked = await prisma.packageRecord.count();
+      const threshold = new Date(Date.now() - 120_000);
+      const [
+        agentCount,
+        onlineCount,
+        rebootRequiredCount,
+        crowdsecHosts,
+        pendingJobs,
+        packagesTracked,
+      ] = await Promise.all([
+        prisma.agent.count(),
+        prisma.agent.count({
+          where: { status: "ONLINE", lastSeenAt: { gte: threshold } },
+        }),
+        prisma.agent.count({ where: { rebootRequired: true } }),
+        prisma.agent.count({ where: { crowdsecInstalled: true } }),
+        prisma.job.count({
+          where: { status: { in: ["QUEUED", "RUNNING"] } },
+        }),
+        prisma.packageRecord.count(),
+      ]);
 
       return {
         agentCount,
         onlineCount,
-        staleCount,
+        staleCount: agentCount - onlineCount,
         pendingJobs,
         packagesTracked,
         rebootRequiredCount,

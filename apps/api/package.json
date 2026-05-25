@@ -10,8 +10,11 @@
     "lint": "echo skip"
   },
   "dependencies": {
+    "@fastify/compress": "^8.0.1",
     "@fastify/cors": "^10.0.2",
+    "@fastify/helmet": "^13.0.0",
     "@fastify/jwt": "^9.0.3",
+    "@fastify/rate-limit": "^10.2.2",
     "@fastify/websocket": "^11.0.2",
     "@fleet/db": "*",
     "@fleet/types": "*",

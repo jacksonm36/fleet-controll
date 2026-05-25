@@ -8,14 +8,29 @@ import { JobLogs } from "@/components/JobLogs";
 import { apiFetch } from "@/lib/api";
 import { getToken } from "@/lib/auth";
 import { useHydrated } from "@/lib/useHydrated";
+import { usePolling } from "@/lib/usePolling";
 
 type Agent = {
   id: string;
   hostname: string;
   osType: string;
+  osDetail: string | null;
+  version: string | null;
+  status: string;
+  online: boolean;
+  lastSeenAt: string | null;
+  labels: Record<string, unknown> | null;
   crowdsecInstalled: boolean;
   rebootRequired: boolean;
+  _count?: { packages: number; services: number; jobs: number };
 };
+
+function formatLastSeen(iso: string | null): string {
+  if (!iso) return "Never";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "Unknown";
+  return d.toLocaleString();
+}
 
 type Pkg = {
   id: string;
@@ -56,6 +71,7 @@ export default function AgentDetailPage() {
   const [jobOpen, setJobOpen] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -83,12 +99,14 @@ export default function AgentDetailPage() {
 
   useEffect(() => {
     if (!hydrated || !getToken()) return;
-
     setLoading(true);
     void reload().catch(() => setLoading(false));
-    const timer = setInterval(() => void reload().catch(() => undefined), 20000);
-    return () => clearInterval(timer);
   }, [id, hydrated]);
+
+  usePolling(() => {
+    if (!hydrated || !getToken()) return;
+    void reload().catch(() => undefined);
+  }, 25_000, false);
 
   const managerGuess = useMemo(() => {
     if (!agent) return "apt";
@@ -102,6 +120,20 @@ export default function AgentDetailPage() {
       body: JSON.stringify({ agentId: id, type, payload }),
     });
     await reload();
+  }
+
+  async function deleteAgent() {
+    if (!agent) return;
+    const msg = `Remove agent "${agent.hostname}" from Fleet?\n\nThis deletes its inventory, jobs, and API credentials. The agent process on the host is not stopped automatically.`;
+    if (!confirm(msg)) return;
+    setDeleting(true);
+    try {
+      await apiFetch(`/api/agents/${id}`, { method: "DELETE" });
+      router.push("/agents");
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Delete failed");
+      setDeleting(false);
+    }
   }
 
   if (!hydrated) return <AuthLoadingShell />;
@@ -124,11 +156,28 @@ export default function AgentDetailPage() {
             <div className="text-xs uppercase tracking-wide text-white/50">
               Agent
             </div>
-            <h1 className="text-2xl font-semibold">{agent.hostname}</h1>
-            <p className="text-sm text-white/60">
-              {agent.osType.toUpperCase()} · CrowdSec{" "}
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="text-2xl font-semibold">{agent.hostname}</h1>
+              <span
+                className={
+                  agent.online
+                    ? "rounded-full bg-emerald-500/20 px-2.5 py-0.5 text-xs font-medium text-emerald-400"
+                    : "rounded-full bg-amber-500/20 px-2.5 py-0.5 text-xs font-medium text-amber-300"
+                }
+              >
+                {agent.online ? "Online" : "Stale / offline"}
+              </span>
+            </div>
+            <p className="mt-1 text-sm text-white/60">
+              {agent.osType.toUpperCase()}
+              {agent.osDetail ? ` · ${agent.osDetail}` : ""}
+              {agent.version ? ` · agent ${agent.version}` : ""}
+              {" · "}CrowdSec{" "}
               {agent.crowdsecInstalled ? "enabled" : "not reporting"}
               {agent.rebootRequired ? " · reboot pending" : ""}
+            </p>
+            <p className="text-xs text-white/40">
+              Last seen {formatLastSeen(agent.lastSeenAt)}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -152,6 +201,14 @@ export default function AgentDetailPage() {
               }
             >
               Queue upgrades ({managerGuess})
+            </button>
+            <button
+              type="button"
+              className="rounded-md border border-red-500/40 px-3 py-2 text-xs text-red-300 hover:bg-red-500/20 disabled:opacity-50"
+              disabled={deleting}
+              onClick={() => void deleteAgent()}
+            >
+              {deleting ? "Removing…" : "Delete agent"}
             </button>
           </div>
         </div>
@@ -182,19 +239,91 @@ export default function AgentDetailPage() {
         </div>
 
         {tab === "overview" ? (
-          <div className="grid gap-4 md:grid-cols-3">
+          <div className="space-y-4">
             <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4">
-              <div className="text-xs uppercase text-white/50">Packages</div>
-              <div className="mt-2 text-3xl font-semibold">{packages.length}</div>
+              <div className="text-xs uppercase text-white/50">Agent information</div>
+              <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
+                <div>
+                  <dt className="text-xs text-white/50">Hostname</dt>
+                  <dd className="font-medium">{agent.hostname}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-white/50">Agent ID</dt>
+                  <dd className="break-all font-mono text-xs text-white/80">{agent.id}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-white/50">Connection</dt>
+                  <dd className={agent.online ? "text-emerald-400" : "text-amber-300"}>
+                    {agent.online ? "Online (heartbeat within 2 min)" : "Stale / offline"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-white/50">OS</dt>
+                  <dd className="capitalize">
+                    {agent.osType}
+                    {agent.osDetail ? (
+                      <span className="text-white/60"> — {agent.osDetail}</span>
+                    ) : null}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-white/50">Agent binary</dt>
+                  <dd>{agent.version ?? "Unknown"}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-white/50">Last seen</dt>
+                  <dd>{formatLastSeen(agent.lastSeenAt)}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-white/50">Recorded status</dt>
+                  <dd className="capitalize">{agent.status.toLowerCase()}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-white/50">CrowdSec</dt>
+                  <dd>{agent.crowdsecInstalled ? "Reporting" : "Not reporting"}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-white/50">Reboot</dt>
+                  <dd>{agent.rebootRequired ? "Required" : "Not required"}</dd>
+                </div>
+                {agent.labels && Object.keys(agent.labels).length > 0 ? (
+                  <div className="sm:col-span-2 lg:col-span-3">
+                    <dt className="text-xs text-white/50">Labels</dt>
+                    <dd className="mt-1 font-mono text-xs text-white/70">
+                      {JSON.stringify(agent.labels)}
+                    </dd>
+                  </div>
+                ) : null}
+              </dl>
             </div>
-            <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4">
-              <div className="text-xs uppercase text-white/50">Services</div>
-              <div className="mt-2 text-3xl font-semibold">{services.length}</div>
+
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4">
+                <div className="text-xs uppercase text-white/50">Packages</div>
+                <div className="mt-2 text-3xl font-semibold">
+                  {agent._count?.packages ?? packages.length}
+                </div>
+              </div>
+              <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4">
+                <div className="text-xs uppercase text-white/50">Services</div>
+                <div className="mt-2 text-3xl font-semibold">
+                  {agent._count?.services ?? services.length}
+                </div>
+              </div>
+              <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4">
+                <div className="text-xs uppercase text-white/50">Jobs</div>
+                <div className="mt-2 text-3xl font-semibold">
+                  {agent._count?.jobs ?? jobs.length}
+                </div>
+              </div>
             </div>
-            <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4">
-              <div className="text-xs uppercase text-white/50">Recent jobs</div>
-              <div className="mt-2 text-3xl font-semibold">{jobs.length}</div>
-            </div>
+            {!packages.length && !services.length ? (
+              <p className="text-sm text-white/50">
+                Inventory is empty until the agent runs a package refresh job or sends a full
+                inventory report. Use &quot;Queue inventory refresh&quot; above when the agent is
+                online.
+              </p>
+            ) : null}
           </div>
         ) : null}
 

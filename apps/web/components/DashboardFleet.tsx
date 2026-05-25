@@ -1,7 +1,8 @@
 "use client";
 
 import type { FleetSummaryV1 } from "@fleet/types";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { usePolling } from "@/lib/usePolling";
 import {
   Bar,
   BarChart,
@@ -17,30 +18,21 @@ export function DashboardFleet() {
   const [summary, setSummary] = useState<FleetSummaryV1 | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const data = await apiFetch<FleetSummaryV1>("/api/fleet/summary");
-        if (!cancelled) setSummary(data);
-      } catch (e) {
-        if (!cancelled)
-          setError(e instanceof Error ? e.message : "Failed to load fleet");
-      }
-    })();
-    const id = setInterval(async () => {
-      try {
-        const data = await apiFetch<FleetSummaryV1>("/api/fleet/summary");
-        if (!cancelled) setSummary(data);
-      } catch {
-        /* ignore */
-      }
-    }, 15000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
+  const loadSummary = useCallback(async () => {
+    try {
+      const data = await apiFetch<FleetSummaryV1>("/api/fleet/summary");
+      setSummary(data);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load fleet");
+    }
   }, []);
+
+  useEffect(() => {
+    void loadSummary();
+  }, [loadSummary]);
+
+  usePolling(() => loadSummary(), 20_000);
 
   if (error) {
     return (

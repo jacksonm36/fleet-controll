@@ -13,6 +13,7 @@ type AgentRow = {
   id: string;
   hostname: string;
   osType: string;
+  osDetail?: string | null;
   status: string;
   lastSeenAt: string | null;
   online: boolean;
@@ -26,6 +27,21 @@ export default function AgentsPage() {
   const router = useRouter();
   const hydrated = useHydrated();
   const [rows, setRows] = useState<AgentRow[]>([]);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  async function removeAgent(agent: AgentRow) {
+    const msg = `Remove agent "${agent.hostname}" from Fleet?\n\nThis deletes its inventory, jobs, and API credentials. The agent process on the host is not stopped automatically.`;
+    if (!confirm(msg)) return;
+    setDeletingId(agent.id);
+    try {
+      await apiFetch(`/api/agents/${agent.id}`, { method: "DELETE" });
+      setRows((prev) => prev.filter((r) => r.id !== agent.id));
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Delete failed");
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   useEffect(() => {
     if (!hydrated) return;
@@ -74,6 +90,7 @@ export default function AgentsPage() {
                 <th className="px-4 py-3">Packages</th>
                 <th className="px-4 py-3">CrowdSec</th>
                 <th className="px-4 py-3">Agent</th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -84,7 +101,12 @@ export default function AgentsPage() {
                       {a.hostname}
                     </Link>
                   </td>
-                  <td className="px-4 py-3 capitalize">{a.osType}</td>
+                  <td className="px-4 py-3">
+                    <span className="capitalize">{a.osType}</span>
+                    {a.osDetail ? (
+                      <span className="block text-xs text-white/50">{a.osDetail}</span>
+                    ) : null}
+                  </td>
                   <td className="px-4 py-3">
                     <span
                       className={
@@ -101,11 +123,21 @@ export default function AgentsPage() {
                   <td className="px-4 py-3 text-xs text-white/60">
                     {a.version ?? "unknown"}
                   </td>
+                  <td className="px-4 py-3 text-right">
+                    <button
+                      type="button"
+                      className="rounded-md px-2 py-1 text-xs text-red-300 hover:bg-red-500/20 disabled:opacity-50"
+                      disabled={deletingId === a.id}
+                      onClick={() => void removeAgent(a)}
+                    >
+                      {deletingId === a.id ? "Removing…" : "Delete"}
+                    </button>
+                  </td>
                 </tr>
               ))}
               {!rows.length ? (
                 <tr>
-                  <td className="px-4 py-6 text-white/60" colSpan={6}>
+                  <td className="px-4 py-6 text-white/60" colSpan={7}>
                     No agents enrolled yet — mint a token under Enrollment and start an agent.
                   </td>
                 </tr>
