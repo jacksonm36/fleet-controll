@@ -11,14 +11,18 @@ apt-get install -y --no-install-recommends \
   openssl \
   postgresql \
   postgresql-client \
-  postgresql-contrib
+  postgresql-contrib \
+  redis-server
 
 # Ensure server is up (WSL may not use systemd the same way as bare metal).
 if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running --quiet 2>/dev/null; then
   systemctl enable postgresql 2>/dev/null || true
   systemctl restart postgresql 2>/dev/null || true
+  systemctl enable redis-server 2>/dev/null || true
+  systemctl restart redis-server 2>/dev/null || true
 else
   service postgresql start 2>/dev/null || true
+  service redis-server start 2>/dev/null || true
 fi
 
 # Debian/Ubuntu: start every registered cluster (e.g. 17 main).

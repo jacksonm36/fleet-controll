@@ -34,3 +34,30 @@ export function resolveCorsOrigins(): boolean | string[] {
 export function resolveTrustProxy(): boolean {
   return process.env.TRUST_PROXY === "1" || process.env.TRUST_PROXY === "true";
 }
+
+/** Install/enroll scripts and agent API default to HTTPS (disable with FLEET_AUTO_ENCRYPT=0). */
+export function fleetAutoEncrypt(): boolean {
+  const raw = process.env.FLEET_AUTO_ENCRYPT?.trim().toLowerCase();
+  if (raw === "0" || raw === "false" || raw === "no") return false;
+  return true;
+}
+
+/** When true, all agent API traffic including enroll must use HTTPS. */
+export function fleetRequireTls(): boolean {
+  const raw = process.env.FLEET_REQUIRE_TLS?.trim().toLowerCase();
+  if (raw === "0" || raw === "false" || raw === "no") return false;
+  if (raw === "1" || raw === "true" || raw === "yes") return true;
+  return fleetAutoEncrypt();
+}
+
+export function fleetPublicHost(): string | null {
+  const h = process.env.FLEET_PUBLIC_HOST?.trim();
+  return h || null;
+}
+
+export function fleetHstsEnabled(): boolean {
+  const raw = process.env.FLEET_HSTS?.trim().toLowerCase();
+  if (raw === "1" || raw === "true") return true;
+  if (raw === "0" || raw === "false") return false;
+  return fleetRequireTls();
+}

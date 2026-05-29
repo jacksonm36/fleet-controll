@@ -2,13 +2,16 @@ import compress from "@fastify/compress";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import type { FastifyInstance } from "fastify";
-import { isProduction } from "../lib/env.js";
+import { fleetHstsEnabled, isProduction } from "../lib/env.js";
 
 export async function registerSecurityPlugins(app: FastifyInstance) {
   await app.register(helmet, {
     global: true,
     contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
+    strictTransportSecurity: fleetHstsEnabled()
+      ? { maxAge: 31_536_000, includeSubDomains: true, preload: false }
+      : false,
   });
 
   await app.register(compress, {
@@ -31,8 +34,12 @@ export async function registerSecurityPlugins(app: FastifyInstance) {
 }
 
 export async function registerAuthRateLimit(app: FastifyInstance) {
+  const max = Number(
+    process.env.AUTH_LOGIN_RATE_MAX ??
+      (isProduction() ? 30 : 120),
+  );
   await app.register(rateLimit, {
-    max: isProduction() ? 10 : 30,
+    max,
     timeWindow: "15 minutes",
     keyGenerator: (req) => `login:${req.ip}`,
     errorResponseBuilder: (_req, context) => ({

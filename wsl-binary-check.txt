@@ -1,1 +1,0 @@
--rwxr-xr-x 1 jackson jackson 6975640 May 18 02:03 /home/jackson/.local/bin/fleet-agent

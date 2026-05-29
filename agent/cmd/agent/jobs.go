@@ -78,11 +78,40 @@ func runJob(cli *http.Client, base, token string, job *jobRecord, sudo bool) {
 			return
 		}
 		logFn("Inventory refresh pushed.")
-	case "PACKAGE_UPGRADE":
-		if err := runPackageUpgrade(job.Payload, sudo, logFn); err != nil {
+	case "PACKAGE_PATCH_PLAN":
+		result, err := runPackagePatchPlan(job.Payload, sudo, logFn)
+		if err != nil {
 			fail(err)
 			return
 		}
+		if err := completeJobWithResult(cli, base, token, job.ID, "COMPLETED", "", result); err != nil {
+			log.Printf("complete job failed: %v", err)
+		}
+		return
+	case "HOST_KERNEL_MAINTENANCE":
+		result, err := runHostKernelMaintenance(job.Payload, sudo, logFn)
+		if err != nil {
+			fail(err)
+			return
+		}
+		if err := completeJobWithResult(cli, base, token, job.ID, "COMPLETED", "", result); err != nil {
+			log.Printf("complete job failed: %v", err)
+		}
+		return
+	case "PACKAGE_UPGRADE":
+		result, err := runPackageUpgradeWithRefresh(cli, base, token, job.Payload, sudo, logFn)
+		if err != nil {
+			if result.UpgradedCount > 0 {
+				_ = completeJobWithResult(cli, base, token, job.ID, "FAILED", err.Error(), result)
+			} else {
+				fail(err)
+			}
+			return
+		}
+		if err := completeJobWithResult(cli, base, token, job.ID, "COMPLETED", "", result); err != nil {
+			log.Printf("complete job failed: %v", err)
+		}
+		return
 	case "SERVICE_RESTART", "SERVICE_STOP", "SERVICE_START":
 		if err := runServiceAction(job.Type, job.Payload, sudo, logFn); err != nil {
 			fail(err)
@@ -93,6 +122,26 @@ func runJob(cli *http.Client, base, token string, job *jobRecord, sudo bool) {
 			fail(err)
 			return
 		}
+	case "SHELL_SCRIPT":
+		if err := runShellScript(job.Payload, sudo, logFn); err != nil {
+			fail(err)
+			return
+		}
+	case "ANSIBLE_PLAYBOOK":
+		if err := runAnsiblePlaybook(job.Payload, sudo, logFn); err != nil {
+			fail(err)
+			return
+		}
+	case "ANSIBLE_ADHOC":
+		if err := runAnsibleAdhoc(job.Payload, sudo, logFn); err != nil {
+			fail(err)
+			return
+		}
+	case "TERRAFORM_INIT", "TERRAFORM_PLAN", "TERRAFORM_APPLY":
+		if err := runTerraformJob(job.Type, job.Payload, sudo, logFn); err != nil {
+			fail(err)
+			return
+		}
 	default:
 		fail(fmt.Errorf("unsupported job type %s", job.Type))
 		return
@@ -100,71 +149,6 @@ func runJob(cli *http.Client, base, token string, job *jobRecord, sudo bool) {
 
 	if err := completeJob(cli, base, token, job.ID, "COMPLETED", ""); err != nil {
 		log.Printf("complete job failed: %v", err)
-	}
-}
-
-func runPackageUpgrade(payload json.RawMessage, sudo bool, logFn func(string)) error {
-	var p map[string]any
-	if len(payload) > 0 {
-		_ = json.Unmarshal(payload, &p)
-	}
-
-	manager := ""
-	if p != nil {
-		if v, ok := p["manager"].(string); ok {
-			manager = v
-		}
-	}
-	if manager == "" {
-		if runtime.GOOS == "windows" {
-			manager = "winget"
-		} else {
-			manager = "apt"
-		}
-	}
-
-	all := false
-	if p != nil {
-		if v, ok := p["all"].(bool); ok {
-			all = v
-		}
-	}
-
-	logFn(fmt.Sprintf("package upgrade manager=%s all=%v", manager, all))
-
-	switch runtime.GOOS {
-	case "linux":
-		switch manager {
-		case "dnf", "yum":
-			return streamCommand(logFn, sudo, "dnf", []string{"upgrade", "-y", "--nobest"})
-		case "apt", "dpkg":
-			if err := streamCommand(logFn, sudo, "apt-get", []string{"update"}); err != nil {
-				return err
-			}
-			return streamCommand(logFn, sudo, "apt-get", []string{"upgrade", "-y"})
-		default:
-			if err := streamCommand(logFn, sudo, "apt-get", []string{"update"}); err != nil {
-				return err
-			}
-			return streamCommand(logFn, sudo, "apt-get", []string{"upgrade", "-y"})
-		}
-	case "windows":
-		if manager != "winget" {
-			return fmt.Errorf("unsupported windows manager %s", manager)
-		}
-		args := []string{
-			"upgrade",
-			"--all",
-			"--accept-package-agreements",
-			"--accept-source-agreements",
-			"--disable-interactivity",
-		}
-		if !all {
-			logFn("note: winget upgrades apply to all pending updates when packageNames omitted")
-		}
-		return streamCommand(logFn, false, "winget", args)
-	default:
-		return fmt.Errorf("unsupported GOOS %s", runtime.GOOS)
 	}
 }
 
@@ -243,11 +227,21 @@ func runCrowdSecDecision(payload json.RawMessage, sudo bool, logFn func(string))
 	return streamCommand(logFn, sudo, cscli, args)
 }
 
+func configureCommandEnv(cmd *exec.Cmd) {
+	cmd.Env = append(os.Environ(),
+		"DEBIAN_FRONTEND=noninteractive",
+		"NEEDRESTART_MODE=a",
+		"APT_LISTCHANGES_FRONTEND=none",
+		"UCF_FORCE_CONFOLD=1",
+	)
+}
+
 func streamCommand(logFn func(string), sudo bool, name string, args []string) error {
 	cmd := exec.Command(name, args...)
 	if sudo && runtime.GOOS == "linux" && os.Geteuid() != 0 {
 		cmd = exec.Command("sudo", append([]string{"-n", name}, args...)...)
 	}
+	configureCommandEnv(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -297,4 +291,67 @@ func streamCommand(logFn func(string), sudo bool, name string, args []string) er
 	<-done
 
 	return cmd.Wait()
+}
+
+func streamCommandCapture(logFn func(string), sudo bool, name string, args []string) (string, error) {
+	cmd := exec.Command(name, args...)
+	if sudo && runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		cmd = exec.Command("sudo", append([]string{"-n", name}, args...)...)
+	}
+	configureCommandEnv(cmd)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return "", err
+	}
+
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+
+	var captured strings.Builder
+	copyLines := func(r io.Reader, prefix string) {
+		buf := make([]byte, 4096)
+		acc := ""
+		for {
+			n, readErr := r.Read(buf)
+			if n > 0 {
+				acc += string(buf[:n])
+				for {
+					idx := strings.IndexByte(acc, '\n')
+					if idx == -1 {
+						break
+					}
+					line := strings.TrimRight(acc[:idx], "\r")
+					acc = acc[idx+1:]
+					captured.WriteString(line)
+					captured.WriteByte('\n')
+					logFn(prefix + line)
+				}
+			}
+			if readErr != nil {
+				if strings.TrimSpace(acc) != "" {
+					captured.WriteString(strings.TrimSpace(acc))
+					captured.WriteByte('\n')
+					logFn(prefix + strings.TrimSpace(acc))
+				}
+				break
+			}
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		copyLines(stdout, "")
+		close(done)
+	}()
+	copyLines(stderr, "[stderr] ")
+	<-done
+
+	err = cmd.Wait()
+	return captured.String(), err
 }

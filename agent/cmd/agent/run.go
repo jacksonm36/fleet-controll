@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -18,7 +19,7 @@ func runAgent() {
 	apiToken := getenvDefault("FLEET_AGENT_TOKEN", "")
 	tokenFile := flagString("token-file", getenvDefault("FLEET_AGENT_TOKEN_FILE", defaultTokenPath()))
 	hostnameFlag := flagString("hostname", "")
-	versionFlag := flagString("version", "0.1.0")
+	versionFlag := flagString("version", agentVersionString())
 	useSudo := getenvDefault("FLEET_USE_SUDO", autoSudoDefault())
 	skipCrowdSec := getenvDefault("FLEET_SKIP_CROWDSEC", "false") == "true"
 
@@ -59,17 +60,30 @@ func runAgent() {
 		apiToken = strings.TrimSpace(string(b))
 	}
 
-	httpClient := &http.Client{Timeout: 45 * time.Second}
+	centralURL = strings.TrimRight(strings.TrimSpace(centralURL), "/")
+	ensureControllerCA(centralURL)
+
+	if err := validateCentralURL(centralURL); err != nil {
+		log.Fatalf("invalid controller URL: %v", err)
+	}
+
+	httpClient := newSecureHTTPClient(45 * time.Second)
 	sudo := strings.EqualFold(useSudo, "true")
 
-	go maintainWebSocket(centralURL, apiToken)
+	go maintainWebSocket(centralURL, apiToken, httpClient)
 
 	inventoryTicker := time.NewTicker(10 * time.Minute)
 	crowdSecTicker := time.NewTicker(5 * time.Minute)
-	heartbeatTicker := time.NewTicker(45 * time.Second)
+	heartbeatSec := durationFromEnvSec("FLEET_HEARTBEAT_INTERVAL_SEC", 15)
+	metricsSec := durationFromEnvSec("FLEET_METRICS_INTERVAL_SEC", 20)
+	heartbeatTicker := time.NewTicker(time.Duration(heartbeatSec) * time.Second)
+	metricsTicker := time.NewTicker(time.Duration(metricsSec) * time.Second)
 
 	if err := heartbeat(httpClient, centralURL, apiToken, versionFlag); err != nil {
 		log.Printf("heartbeat error: %v", err)
+	}
+	if err := pushMetrics(httpClient, centralURL, apiToken); err != nil {
+		log.Printf("metrics error: %v", err)
 	}
 	if err := pushInventory(httpClient, centralURL, apiToken, sudo); err != nil {
 		log.Printf("initial inventory error: %v", err)
@@ -79,6 +93,14 @@ func runAgent() {
 			log.Printf("crowdsec snapshot error: %v", err)
 		}
 	}
+
+	go func() {
+		for range metricsTicker.C {
+			if err := pushMetrics(httpClient, centralURL, apiToken); err != nil {
+				log.Printf("metrics error: %v", err)
+			}
+		}
+	}()
 
 	go func() {
 		for range heartbeatTicker.C {
@@ -111,9 +133,19 @@ func runAgent() {
 }
 
 func heartbeat(cli *http.Client, base, token, version string) error {
-	body := map[string]any{"version": version}
-	var discard map[string]any
-	return postJSON(cli, joinURL(base, "/api/agent/v1/heartbeat"), body, token, &discard)
+	body := map[string]any{
+		"version": version,
+		"build":   agentBuildID(),
+		"arch":    runtimeArchKey(),
+	}
+	var out struct {
+		BinaryUpdate *binaryUpdateOffer `json:"binaryUpdate"`
+	}
+	if err := postJSON(cli, joinURL(base, "/api/agent/v1/heartbeat"), body, token, &out); err != nil {
+		return err
+	}
+	maybeApplyBinaryUpdate(cli, base, token, out.BinaryUpdate)
+	return nil
 }
 
 func pushInventory(cli *http.Client, base, token string, sudo bool) error {
@@ -135,12 +167,19 @@ func pushCrowdSec(cli *http.Client, base, token string) error {
 }
 
 func commandLoop(cli *http.Client, base, token string, sudo bool) {
-	poll := &http.Client{Timeout: 35 * time.Second}
+	poll := newSecureHTTPClient(35 * time.Second)
 	for {
-		job, status, err := fetchNextJob(poll, base, token)
+		ctx, cancel := context.WithCancel(context.Background())
+		setCommandPollCancel(cancel)
+		job, status, err := fetchNextJob(ctx, poll, base, token)
+		clearCommandPollCancel()
+		cancel()
+		if errors.Is(err, context.Canceled) {
+			continue
+		}
 		if err != nil {
 			log.Printf("commands poll error: %v", err)
-			time.Sleep(3 * time.Second)
+			time.Sleep(2 * time.Second)
 			continue
 		}
 		if status == http.StatusNoContent || job == nil {
@@ -166,7 +205,11 @@ func enrollAgent(base, token, hostname, version string) (string, error) {
 		"version":  version,
 	}
 	var out enrollResponse
-	if err := postJSON(http.DefaultClient, joinURL(base, "/api/agent/v1/enroll"), body, "", &out); err != nil {
+	cli := newSecureHTTPClient(45 * time.Second)
+	if err := validateCentralURL(base); err != nil {
+		return "", err
+	}
+	if err := postJSON(cli, joinURL(base, "/api/agent/v1/enroll"), body, "", &out); err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(out.APIToken) == "" {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -53,8 +54,8 @@ func postJSON(cli *http.Client, url string, body any, bearer string, out any) er
 	return nil
 }
 
-func fetchNextJob(cli *http.Client, base, token string) (*jobRecord, int, error) {
-	req, err := http.NewRequest(http.MethodGet, joinURL(base, "/api/agent/v1/commands"), nil)
+func fetchNextJob(ctx context.Context, cli *http.Client, base, token string) (*jobRecord, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, joinURL(base, "/api/agent/v1/commands"), nil)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -62,6 +63,9 @@ func fetchNextJob(cli *http.Client, base, token string) (*jobRecord, int, error)
 
 	res, err := cli.Do(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, 0, ctx.Err()
+		}
 		return nil, 0, err
 	}
 	defer res.Body.Close()

@@ -5,9 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/fleet-agent -central=http://127.0.0.1:4000
+ExecStart=/usr/local/bin/fleet-agent -central=https://127.0.0.1:4000
 Environment=FLEET_AGENT_TOKEN_FILE=/etc/fleet/agent.token
 Environment=FLEET_USE_SUDO=true
+# Self-signed nginx cert only: Environment=FLEET_CA_FILE=/etc/fleet/ca.crt
+# Lab-only cleartext: Environment=FLEET_ALLOW_INSECURE_HTTP=1 and http:// URL
 Restart=always
 RestartSec=5
 

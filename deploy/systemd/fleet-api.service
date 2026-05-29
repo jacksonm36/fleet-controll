@@ -1,0 +1,21 @@
+[Unit]
+Description=Fleet Patch Control API
+Documentation=https://github.com/jacksonm36/fleet-controll
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=@FLEET_USER@
+Group=@FLEET_GROUP@
+WorkingDirectory=@FLEET_ROOT@
+EnvironmentFile=-@FLEET_ROOT@/.env
+Environment=HOME=@FLEET_HOME@
+Environment=NVM_DIR=@FLEET_HOME@/.nvm
+ExecStart=@FLEET_ROOT@/scripts/systemd/fleet-api.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=fleet-controller.target

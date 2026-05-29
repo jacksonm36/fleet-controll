@@ -1,0 +1,22 @@
+[Unit]
+Description=Fleet Patch Control Web UI
+Documentation=https://github.com/jacksonm36/fleet-controll
+After=network-online.target fleet-api.service
+Wants=fleet-api.service
+
+[Service]
+Type=simple
+User=@FLEET_USER@
+Group=@FLEET_GROUP@
+WorkingDirectory=@FLEET_ROOT@
+EnvironmentFile=-@FLEET_ROOT@/.env
+Environment=HOME=@FLEET_HOME@
+Environment=NVM_DIR=@FLEET_HOME@/.nvm
+Environment=FLEET_WEB_MODE=@FLEET_WEB_MODE@
+ExecStart=@FLEET_ROOT@/scripts/systemd/fleet-web.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=fleet-controller.target

@@ -21,15 +21,52 @@ enum AgentStatus {
 enum ServiceKind {
   systemd
   windows_service
+  docker
+  podman
+  snap
+  launchd
+}
+
+enum ContainerRuntime {
+  docker
+  podman
+}
+
+enum PatchPlanStatus {
+  PENDING_DRY_RUN
+  READY
+  NO_UPDATES
+  APPROVED
+  REJECTED
+  EXECUTED
+  FAILED
 }
 
 enum JobType {
   PACKAGE_UPGRADE
+  PACKAGE_PATCH_PLAN
   PACKAGE_REFRESH
+  HOST_KERNEL_MAINTENANCE
   SERVICE_RESTART
   SERVICE_STOP
   SERVICE_START
   CROWDSEC_DECISION_ADD
+  SHELL_SCRIPT
+  ANSIBLE_PLAYBOOK
+  ANSIBLE_ADHOC
+  TERRAFORM_INIT
+  TERRAFORM_PLAN
+  TERRAFORM_APPLY
+}
+
+enum AutomationTool {
+  shell
+  ansible
+  terraform
+  opentofu
+  puppet
+  chef
+  custom
 }
 
 enum JobStatus {
@@ -40,12 +77,68 @@ enum JobStatus {
   CANCELLED
 }
 
+enum CveSeverity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+  UNKNOWN
+}
+
 model User {
   id           String   @id @default(cuid())
+  username     String   @unique
   email        String   @unique
   passwordHash String
   role         Role     @default(OPERATOR)
+  disabled     Boolean  @default(false)
+  totpEnabled  Boolean  @default(false)
+  /// AES-256-GCM encrypted TOTP secret (base64)
+  totpSecret   String?
+  updatedAt    DateTime @updatedAt
   createdAt    DateTime @default(now())
+
+  webAuthnCredentials WebAuthnCredential[]
+  recoveryCodes       UserRecoveryCode[]
+}
+
+model WebAuthnCredential {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  credentialId String    @unique
+  publicKey    String    @db.Text
+  counter      BigInt    @default(0)
+  transports   String?
+  nickname     String?
+  createdAt    DateTime  @default(now())
+  lastUsedAt   DateTime?
+
+  @@index([userId])
+}
+
+model UserRecoveryCode {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model AuthChallenge {
+  id        String   @id @default(cuid())
+  userId    String?
+  email     String?
+  type      String
+  challenge String   @db.Text
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+  @@index([userId, type])
 }
 
 model EnrollmentToken {
@@ -58,6 +151,7 @@ model EnrollmentToken {
 
 model Agent {
   id           String       @id @default(cuid())
+  enrolledAt   DateTime     @default(now())
   hostname     String
   osType       String
   osDetail     String?
@@ -65,14 +159,71 @@ model Agent {
   version      String?
   lastSeenAt   DateTime?
   status       AgentStatus  @default(OFFLINE)
+  binaryUpgradeInProgress Boolean @default(false)
+  /// When the current binary self-update began (agent stops heartbeating until restart).
+  binaryUpgradeStartedAt DateTime?
+  /// If set, controller will force-include `binaryUpdate.force=true` for matching builds.
+  binaryUpgradeForcedBuildId String?
+  /// Last binary self-update error reported by the agent (for UI).
+  binaryUpgradeLastError String?
   rebootRequired Boolean    @default(false)
   crowdsecInstalled Boolean @default(false)
+  /// Running kernel (uname -r)
+  kernelRunning   String?
+  /// Newest installed kernel image version when detectable
+  kernelInstalled String?
+  kernelUpdatePending Boolean @default(false)
+  packageUpdatesPending Int @default(0)
+  cveCount              Int @default(0)
+  cveCriticalCount      Int @default(0)
+  cveHighCount          Int @default(0)
+  lastCveScanAt         DateTime?
+  /// Latest host metrics snapshot (CPU, RAM, network, users, health)
+  lastMetricsAt         DateTime?
+  /// Primary IPv4 address reported by the agent
+  primaryIp             String?
+  /// All IPv4 addresses reported by the agent
+  ipAddresses           String[]    @default([])
+  cpuPercent            Float?
+  memUsedPercent        Float?
+  load1                 Float?
+  networkRxBps          Float?
+  networkTxBps          Float?
+  diskRootUsedPercent   Float?
+  loggedInUsers         Int?
+  healthScore           Int?
+  healthStatus          String?
 
   credential          AgentCredential?
   packages            PackageRecord[]
   services            ServiceRecord[]
+  containers          ContainerRecord[]
+  cveFindings         CveFinding[]
   jobs                Job[]
+  patchPlans          PatchPlan[]
+  patchRuns           PatchRun[]
   crowdSecSnapshots   CrowdSecSnapshot[]
+}
+
+/// Known CVE affecting an agent (from OSV, trivy, debsecan, dnf security, etc.)
+model CveFinding {
+  id             String      @id @default(cuid())
+  agentId        String
+  agent          Agent       @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  cveId          String
+  packageName    String?
+  packageVersion String?
+  manager        String?
+  severity       CveSeverity @default(UNKNOWN)
+  summary        String?     @db.Text
+  fixedVersion   String?
+  source         String
+  scannedAt      DateTime    @default(now())
+
+  @@unique([agentId, cveId, packageName, manager])
+  @@index([agentId])
+  @@index([cveId])
+  @@index([severity])
 }
 
 model AgentCredential {
@@ -93,6 +244,8 @@ model PackageRecord {
   version   String
   manager   String
   source    String?
+  updateAvailable Boolean @default(false)
+  availableVersion String?
   updatedAt DateTime @updatedAt
 
   @@unique([agentId, name, manager])
@@ -107,9 +260,29 @@ model ServiceRecord {
   kind      ServiceKind
   state     String
   enabled   Boolean?
+  /// active sub-state, unit file state, or extra detail
+  detail    String?
   updatedAt DateTime    @updatedAt
 
   @@unique([agentId, name, kind])
+  @@index([agentId])
+}
+
+/// Running container workloads (Docker / Podman)
+model ContainerRecord {
+  id             String           @id @default(cuid())
+  agentId        String
+  agent          Agent            @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  name           String
+  image          String
+  imageId        String?
+  runtime        ContainerRuntime
+  status         String
+  ports          String?
+  composeProject String?
+  updatedAt      DateTime         @updatedAt
+
+  @@unique([agentId, name, runtime])
   @@index([agentId])
 }
 
@@ -124,10 +297,57 @@ model Job {
   startedAt    DateTime?
   finishedAt   DateTime?
   errorMessage String?
+  result       Json?
 
-  logs JobLogChunk[]
+  logs           JobLogChunk[]
+  dryRunForPlan  PatchPlan? @relation("DryRunJob")
+  executeForPlan PatchPlan? @relation("ExecuteJob")
+  patchRun       PatchRun?
 
   @@index([agentId, status])
+}
+
+model PatchPlan {
+  id           String          @id @default(cuid())
+  agentId      String
+  agent        Agent           @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  status       PatchPlanStatus @default(PENDING_DRY_RUN)
+  manager      String
+  securityOnly Boolean         @default(false)
+  packages     Json            @default("[]")
+  rebootMayBeRequired Boolean  @default(false)
+  planSource   String?
+  dryRunJobId  String?         @unique
+  dryRunJob    Job?            @relation("DryRunJob", fields: [dryRunJobId], references: [id], onDelete: SetNull)
+  executeJobId String?         @unique
+  executeJob   Job?            @relation("ExecuteJob", fields: [executeJobId], references: [id], onDelete: SetNull)
+  approvedById String?
+  approvedAt   DateTime?
+  createdAt    DateTime        @default(now())
+  executedAt   DateTime?
+  patchRuns    PatchRun[]
+
+  @@index([agentId, status])
+  @@index([createdAt])
+}
+
+model PatchRun {
+  id           String     @id @default(cuid())
+  agentId      String
+  agent        Agent      @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  patchPlanId  String?
+  patchPlan    PatchPlan? @relation(fields: [patchPlanId], references: [id], onDelete: SetNull)
+  jobId        String     @unique
+  job          Job        @relation(fields: [jobId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  manager      String
+  packageCount Int
+  exitStatus   String
+  startedAt    DateTime
+  finishedAt   DateTime?
+  summary      Json?
+
+  @@index([agentId])
+  @@index([startedAt])
 }
 
 model JobLogChunk {
@@ -158,4 +378,23 @@ model AuditEvent {
   createdAt DateTime @default(now())
 
   @@index([createdAt])
+}
+
+/// Reusable automation definitions (shell, Ansible, Terraform, etc.)
+model AutomationScript {
+  id          String         @id @default(cuid())
+  name        String
+  description String?
+  tool        AutomationTool
+  /// shell body, playbook YAML, terraform HCL, or command template
+  content     String         @db.Text
+  /// Default job payload merged on run (vars, cwd, extraVars, etc.)
+  defaultPayload Json?
+  tags        String[]       @default([])
+  createdBy   String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@unique([name])
+  @@index([tool])
 }

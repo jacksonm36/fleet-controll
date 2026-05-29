@@ -5,11 +5,11 @@
 Mint a pairing secret in the web UI (**Enrollment**), then on the agent host (Linux / WSL):
 
 ```bash
-curl -fsSL 'http://YOUR_CONTROLLER:4000/api/public/agent-install.sh' \
+curl -kfsSL 'https://YOUR_CONTROLLER/api/public/agent-install.sh' \
   | FLEET_ENROLL_TOKEN='paste-minted-secret' bash
 ```
 
-The script is served by your running API. It embeds `FLEET_CENTRAL_URL` from the host you curled, then falls back to **network discovery** (`scripts/fleet-discover-central.sh`) if needed.
+Use `-k` on the first curl when the controller uses a self-signed nginx certificate (the script downloads and trusts the cert for all later HTTPS calls). Omit `-k` if you use a public CA.
 
 ## From GitHub (no running API required for download)
 
@@ -43,10 +43,22 @@ curl -fsSL "${FLEET_GITHUB_RAW_BASE}/scripts/install-fleet-agent.sh" \
 | `FLEET_GITHUB_RAW_BASE` | Raw GitHub URL for helper scripts |
 | `FLEET_USE_RELEASE` | `1` = download release binary instead of `cargo build` |
 | `FLEET_SKIP_AUTOSTART` | `1` = skip systemd/cron |
-| `FLEET_SKIP_ENROLL` | `1` = skip enroll if token file exists |
+| `FLEET_CA_FILE` | Set automatically by install script when self-signed; path to controller PEM |
+| `FLEET_CA_DOWNLOAD_URL` | Injected by API; install script uses this to fetch the cert |
+| `FLEET_SKIP_SCANNER_DEPS` | `1` = skip optional apt installs (default on main installer) |
+| `FLEET_INSTALL_SCANNER_DEPS` | `1` = opt in to `debsecan` only — **never** installs `docker.io` or podman |
+| `FLEET_INSTALL_ANSIBLE` | `1` = opt in to `ansible` for playbook jobs (large dependency tree) |
+| `FLEET_INSTALL_TRIVY` | `1` = install trivy and set `FLEET_TRIVY_SCAN=1` (slow rootfs scan) |
+| `FLEET_INSTALL_CROWDSEC` | `1` = install `crowdsec` / `cscli` when available in apt |
+| `FLEET_SKIP_ANSIBLE` | `1` = skip ansible even when scanner deps are enabled |
+
+The default install only places the `fleet-agent` binary and enrolls — it does **not** run `apt install docker.io` or other package changes that can break existing Docker, Termix, or application stacks. Container inventory uses whatever `docker` / `podman` CLI is already on the host.
+
+To add CVE scanning: `FLEET_INSTALL_SCANNER_DEPS=1`. For Ansible jobs: also set `FLEET_INSTALL_ANSIBLE=1`. After install, use **Queue inventory refresh** on the agent in the UI.
 
 ## Files
 
 - `scripts/install-fleet-agent.sh` — main installer
+- `scripts/install-fleet-agent-scanners.sh` — debsecan / optional trivy & CrowdSec
 - `scripts/fleet-discover-central.sh` — probe `/health` on candidate URLs
 - `GET /api/public/agent-install.sh` — same script with controller URL injected

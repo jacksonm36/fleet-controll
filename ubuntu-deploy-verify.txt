@@ -1,9 +1,0 @@
--rwxr-xr-x 1 jackson jackson 6975640 May 18 02:09 /home/jackson/.local/bin/fleet-agent
-Fleet control-plane agent ÔÇö enroll, heartbeat, inventory, long-poll jobs
-
-Usage: fleet-agent [OPTIONS]
-
-Options:
-      --central <CENTRAL>              [env: FLEET_CENTRAL_URL=] [default: http://127.0.0.1:4000]
-      --enroll-token <ENROLL_TOKEN>    One-shot enrollment secret (from Fleet UI enrollment token mint) [env: FLEET_ENROLL_TOKEN=]
-      --agent-token <AGENT_TOKEN>      [env: FLEET_AGENT_TOKEN=]

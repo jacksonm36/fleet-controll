@@ -3,21 +3,24 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "dev": "next dev --port 3000 --hostname 0.0.0.0",
+    "dev": "next dev --port 3001 --hostname 127.0.0.1",
     "build": "next build",
-    "start": "next start --port 3000",
+    "start": "next start --port 3001 --hostname 127.0.0.1",
     "lint": "echo skip"
   },
   "dependencies": {
     "@fleet/types": "*",
     "@fleet/ui": "*",
+    "@simplewebauthn/browser": "^13.1.0",
     "next": "^15.1.4",
+    "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "recharts": "^2.15.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
+    "@types/qrcode": "^1.5.5",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
     "autoprefixer": "^10.4.20",

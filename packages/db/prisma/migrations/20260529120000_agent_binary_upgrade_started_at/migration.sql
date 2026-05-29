@@ -1,0 +1,2 @@
+ALTER TABLE "Agent"
+  ADD COLUMN IF NOT EXISTS "binaryUpgradeStartedAt" TIMESTAMP(3);

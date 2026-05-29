@@ -1,3 +1,9 @@
+select,
+select option {
+  color: #f1f5f9;
+  background-color: #1a2332;
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

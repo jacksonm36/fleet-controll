@@ -1,16 +1,47 @@
 import type { FastifyInstance } from "fastify";
-import { prisma } from "@fleet/db";
-import { sha256Hex } from "../lib/crypto.js";
+import type { WebSocket } from "ws";
+import { resolveAgentCredential } from "../middleware/agent-auth.js";
 import {
   registerAgentSocket,
   unregisterAgentSocket,
 } from "../lib/agent-sockets.js";
 
-function tokenFromUrl(url: string): string | null {
+function tokenFromRequest(
+  url: string,
+  authorization?: string | string[],
+): string | null {
+  const auth = Array.isArray(authorization) ? authorization[0] : authorization;
+  if (auth?.startsWith("Bearer ")) {
+    const t = auth.slice("Bearer ".length).trim();
+    if (t) return t;
+  }
   const q = url.indexOf("?");
   if (q === -1) return null;
   const params = new URLSearchParams(url.slice(q + 1));
   return params.get("token");
+}
+
+/** @fastify/websocket v11 passes WebSocket directly; older versions use { socket }. */
+function wsSocket(conn: { socket?: WebSocket } | WebSocket): WebSocket {
+  if (
+    conn &&
+    typeof conn === "object" &&
+    "socket" in conn &&
+    conn.socket != null
+  ) {
+    return conn.socket;
+  }
+  return conn as WebSocket;
+}
+
+function safeClose(sock: WebSocket, code: number, reason: string) {
+  try {
+    if (sock.readyState === sock.OPEN || sock.readyState === sock.CONNECTING) {
+      sock.close(code, reason);
+    }
+  } catch {
+    /* ignore */
+  }
 }
 
 export async function agentWsRoutes(app: FastifyInstance) {
@@ -18,35 +49,45 @@ export async function agentWsRoutes(app: FastifyInstance) {
     "/stream",
     { websocket: true },
     (conn, req) => {
-      const token = tokenFromUrl(req.url ?? "");
+      const sock = wsSocket(conn);
+      const token = tokenFromRequest(
+        req.url ?? "",
+        req.headers.authorization,
+      );
 
       if (!token) {
-        conn.socket.close(4001, "missing_token");
+        safeClose(sock, 4001, "missing_token");
         return;
       }
 
       void (async () => {
-        const secretHash = sha256Hex(token);
-        const cred = await prisma.agentCredential.findFirst({
-          where: { secretHash },
-        });
-        if (!cred) {
-          conn.socket.close(4002, "invalid_token");
-          return;
+        try {
+          const cred = await resolveAgentCredential(token);
+          if (!cred) {
+            safeClose(sock, 4002, "invalid_token");
+            return;
+          }
+
+          const agentId = cred.agentId;
+          const bridge = {
+            send: (data: string) => {
+              if (sock.readyState === sock.OPEN) sock.send(data);
+            },
+            close: () => safeClose(sock, 1000, "bye"),
+          };
+          registerAgentSocket(agentId, bridge);
+
+          sock.on("close", () => {
+            unregisterAgentSocket(agentId, bridge);
+          });
+
+          if (sock.readyState === sock.OPEN) {
+            sock.send(JSON.stringify({ type: "hello", agentId }));
+          }
+        } catch (err) {
+          app.log.error({ err }, "agent websocket handler failed");
+          safeClose(sock, 1011, "server_error");
         }
-
-        const agentId = cred.agentId;
-        const socket = {
-          send: (data: string) => conn.socket.send(data),
-          close: () => conn.socket.close(),
-        };
-        registerAgentSocket(agentId, socket);
-
-        conn.socket.on("close", () => {
-          unregisterAgentSocket(agentId, socket);
-        });
-
-        conn.socket.send(JSON.stringify({ type: "hello", agentId }));
       })();
     },
   );

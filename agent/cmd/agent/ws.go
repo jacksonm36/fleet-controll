@@ -1,16 +1,16 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
-func maintainWebSocket(base, token string) {
-	d := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+func maintainWebSocket(base, token string, cli *http.Client) {
+	d := newWebSocketDialer()
 
 	for {
 		streamURL := websocketURL(joinURL(base, "/api/agent/v1/stream"))
@@ -19,11 +19,11 @@ func maintainWebSocket(base, token string) {
 			time.Sleep(5 * time.Second)
 			continue
 		}
-		q := u.Query()
-		q.Set("token", token)
-		u.RawQuery = q.Encode()
 
-		conn, _, err := d.Dial(u.String(), nil)
+		hdr := http.Header{}
+		hdr.Set("Authorization", "Bearer "+token)
+
+		conn, _, err := d.Dial(u.String(), hdr)
 		if err != nil {
 			time.Sleep(5 * time.Second)
 			continue
@@ -39,9 +39,26 @@ func maintainWebSocket(base, token string) {
 				break
 			}
 			log.Printf("websocket: %s", string(msg))
+			handleWebSocketMessage(cli, base, token, msg)
 		}
 		_ = conn.Close()
 		time.Sleep(2 * time.Second)
+	}
+}
+
+func handleWebSocketMessage(cli *http.Client, base, token string, raw []byte) {
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		return
+	}
+	switch envelope.Type {
+	case "poll_commands", "wake":
+		wakeCommandPoll()
+	case "upgrade_binary", "agent_upgrade":
+		triggerBinaryUpdateCheck(cli, base, token)
+		wakeCommandPoll()
 	}
 }
 

@@ -1,0 +1,30 @@
+apiVersion: 1
+
+deleteDatasources:
+  - name: InfluxDB
+    orgId: 1
+  - name: Loki
+    orgId: 1
+
+datasources:
+  - name: InfluxDB
+    uid: fleet-influx
+    type: influxdb
+    access: proxy
+    url: http://127.0.0.1:8086
+    jsonData:
+      version: Flux
+      organization: fleet
+      defaultBucket: host_metrics
+      tlsSkipVerify: true
+    secureJsonData:
+      token: ${INFLUX_TOKEN}
+    isDefault: true
+    editable: true
+
+  - name: Loki
+    uid: fleet-loki
+    type: loki
+    access: proxy
+    url: http://127.0.0.1:3100
+    editable: true

@@ -1,12 +1,11 @@
 "use client";
 
-import { type ReactNode, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { Shell } from "@/components/Shell";
 import { AuthLoadingShell } from "@/components/AuthLoadingShell";
 import { apiFetch } from "@/lib/api";
-import { getToken } from "@/lib/auth";
-import { useHydrated } from "@/lib/useHydrated";
+import { usePolling } from "@/lib/usePolling";
+import { useSession } from "@/lib/useSession";
 
 type Status = {
   snapshotHosts: number;
@@ -16,44 +15,41 @@ type Status = {
 };
 
 export default function CrowdSecPage() {
-  const router = useRouter();
-  const hydrated = useHydrated();
+  const { hydrated, checked, authed } = useSession();
   const [status, setStatus] = useState<Status | null>(null);
   const [alerts, setAlerts] = useState<Record<string, unknown>[]>([]);
   const [decisions, setDecisions] = useState<Record<string, unknown>[]>([]);
 
-  useEffect(() => {
-    if (!hydrated) return;
-    if (!getToken()) router.replace("/login");
-  }, [hydrated, router]);
+  const loadCrowdsec = useCallback(async () => {
+    if (!authed) return;
+    try {
+      const [s, a, d] = await Promise.all([
+        apiFetch<Status>("/api/crowdsec/status", { cacheTtlMs: 10_000 }),
+        apiFetch<Record<string, unknown>[]>("/api/crowdsec/alerts", {
+          cacheTtlMs: 15_000,
+        }),
+        apiFetch<Record<string, unknown>[]>("/api/crowdsec/decisions", {
+          cacheTtlMs: 15_000,
+        }),
+      ]);
+      setStatus(s);
+      setAlerts(a);
+      setDecisions(d);
+    } catch {
+      /* handled globally */
+    }
+  }, [authed]);
 
   useEffect(() => {
-    if (!hydrated || !getToken()) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const [s, a, d] = await Promise.all([
-          apiFetch<Status>("/api/crowdsec/status"),
-          apiFetch<Record<string, unknown>[]>("/api/crowdsec/alerts"),
-          apiFetch<Record<string, unknown>[]>("/api/crowdsec/decisions"),
-        ]);
-        if (!cancelled) {
-          setStatus(s);
-          setAlerts(a);
-          setDecisions(d);
-        }
-      } catch {
-        /* handled globally */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [hydrated]);
+    if (!hydrated || !authed) return;
+    void loadCrowdsec();
+  }, [hydrated, authed, loadCrowdsec]);
 
-  if (!hydrated) return <AuthLoadingShell />;
+  usePolling(() => loadCrowdsec(), 30_000, false);
 
-  if (!getToken()) return null;
+  if (!hydrated || !checked) return <AuthLoadingShell />;
+
+  if (!authed) return null;
 
   return (
     <Shell>

@@ -51,12 +51,29 @@ if [[ -z "$PLAIN" ]]; then
 	exit 1
 fi
 
+# Injected when served from Fleet API /api/public/agent-enroll.sh
+FLEET_CENTRAL_DEFAULT="${FLEET_CENTRAL_DEFAULT:-}"
+
 CENTRAL="${FLEET_CENTRAL_URL:-}"
+if [[ -z "$CENTRAL" && -n "$FLEET_CENTRAL_DEFAULT" ]]; then
+	CENTRAL="$FLEET_CENTRAL_DEFAULT"
+fi
 CENTRAL="$(printf '%s' "$CENTRAL" | sed -e 's,/\+$,,')"
 if [[ -z "$CENTRAL" ]]; then
-	echo >&2 "set FLEET_CENTRAL_URL (e.g. http://127.0.0.1:4000)"
+	echo >&2 "set FLEET_CENTRAL_URL (e.g. https://192.168.1.178)"
 	exit 1
 fi
+
+# Injected when served from Fleet API
+FLEET_CA_DOWNLOAD_URL="${FLEET_CA_DOWNLOAD_URL:-}"
+
+# __FLEET_TLS_HELPER_EMBED__
+
+SCRIPT_TLS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fleet-ensure-tls-ca.sh"
+# shellcheck disable=SC1091
+[[ -f "$SCRIPT_TLS" ]] && source "$SCRIPT_TLS"
+fleet_prepare_tls "$CENTRAL"
+fleet_curl_tls_args
 
 if ! command -v python3 >/dev/null 2>&1; then
 	echo >&2 "python3 is required (installed by rust-agent-apt-root bootstrap)."
@@ -71,14 +88,22 @@ export _ENROLL_HOST="$HOST"
 BODY=$(python3 - <<'PY'
 import json
 import os
+from pathlib import Path
+
+os_detail = ""
+try:
+    os_detail = Path("/etc/os-release").read_text(encoding="utf-8", errors="replace").strip()
+except OSError:
+    os_detail = os.uname().sysname.lower()
+
 print(
     json.dumps(
         {
             "token": os.environ["_ENROLL_PAIRING"],
             "hostname": os.environ["_ENROLL_HOST"],
             "osType": "linux",
-            "osDetail": "fleet-agent-curl-enroll.sh",
-            "version": os.environ.get("FLEET_AGENT_VERSION", "0.2.0-rust"),
+            "osDetail": os_detail,
+            "version": os.environ.get("FLEET_AGENT_VERSION", "0.3.0-go"),
         }
     )
 )
@@ -88,7 +113,22 @@ PY
 unset _ENROLL_PAIRING _ENROLL_HOST
 
 URL="${CENTRAL}/api/agent/v1/enroll"
-RESP_BODY=$(curl -fsS -X POST "$URL" -H 'Content-Type: application/json' -d "$BODY")
+HTTP_CODE=$(curl -sS "${FLEET_CURL_TLS_ARGS[@]}" -o /tmp/fleet-enroll-resp.json -w '%{http_code}' \
+	-X POST "$URL" -H 'Content-Type: application/json' -d "$BODY")
+RESP_BODY=$(cat /tmp/fleet-enroll-resp.json 2>/dev/null || true)
+rm -f /tmp/fleet-enroll-resp.json
+
+if [[ "$HTTP_CODE" != "200" ]]; then
+	echo >&2 "enroll failed HTTP $HTTP_CODE — ${RESP_BODY:-empty}"
+	if [[ "$RESP_BODY" == *"invalid_or_expired_token"* ]]; then
+		echo >&2 "Token already used or wrong. Mint a NEW token in Fleet → Enrollment." >&2
+	elif [[ "$RESP_BODY" == *"tls_required"* ]]; then
+		echo >&2 "Controller requires HTTPS. Use https:// in FLEET_CENTRAL_URL or run: sudo bash scripts/setup-fleet-tls-nginx.sh" >&2
+		echo >&2 "Lab-only HTTP for all agent traffic: set FLEET_REQUIRE_TLS=0 on the controller and FLEET_ALLOW_INSECURE_HTTP=1 on the agent." >&2
+	fi
+	exit 1
+fi
+
 API_TOKEN=$(printf '%s' "$RESP_BODY" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("apiToken",""))')
 
 if [[ -z "$API_TOKEN" ]]; then

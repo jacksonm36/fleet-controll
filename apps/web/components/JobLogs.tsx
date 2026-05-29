@@ -1,8 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { apiUrl } from "@/lib/api";
-import { getToken } from "@/lib/auth";
+import { JobLogStream } from "@/components/JobLogStream";
 
 export function JobLogs({
   jobId,
@@ -13,64 +11,6 @@ export function JobLogs({
   open: boolean;
   onClose: () => void;
 }) {
-  const [lines, setLines] = useState<string[]>([]);
-  const alive = useRef(true);
-
-  useEffect(() => {
-    alive.current = true;
-    return () => {
-      alive.current = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!open || !jobId) return;
-    setLines([]);
-    const token = getToken();
-    if (!token) return;
-
-    const ac = new AbortController();
-
-    async function run() {
-      const res = await fetch(apiUrl(`/api/jobs/${jobId}/logs`), {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: ac.signal,
-      });
-      if (!res.ok || !res.body) return;
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      while (alive.current) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const parts = buf.split("\n\n");
-        buf = parts.pop() ?? "";
-        for (const part of parts) {
-          const line = part
-            .split("\n")
-            .filter((l) => l.startsWith("data:"))
-            .map((l) => l.slice(5).trim())
-            .join("");
-          if (!line) continue;
-          try {
-            const payload = JSON.parse(line) as { message?: string; seq?: number };
-            const text =
-              payload.seq !== undefined
-                ? `[${payload.seq}] ${payload.message ?? ""}`
-                : (payload.message ?? line);
-            setLines((prev) => [...prev, text]);
-          } catch {
-            setLines((prev) => [...prev, line]);
-          }
-        }
-      }
-    }
-
-    void run();
-    return () => ac.abort();
-  }, [open, jobId]);
-
   if (!open || !jobId) return null;
 
   return (
@@ -86,9 +26,13 @@ export function JobLogs({
             Close
           </button>
         </div>
-        <pre className="flex-1 overflow-auto p-4 font-mono text-xs text-emerald-100">
-          {lines.join("\n")}
-        </pre>
+        <div className="min-h-0 flex-1 overflow-hidden p-4">
+          <JobLogStream
+            jobId={jobId}
+            maxHeight="none"
+            className="h-full min-h-[50vh] border border-white/10"
+          />
+        </div>
       </div>
     </div>
   );

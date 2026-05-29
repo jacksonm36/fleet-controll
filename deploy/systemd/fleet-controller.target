@@ -1,0 +1,8 @@
+[Unit]
+Description=Fleet Patch Control Controller (API + Web)
+Documentation=https://github.com/jacksonm36/fleet-controll
+Wants=fleet-api.service fleet-web.service
+After=network-online.target postgresql.service redis-server.service
+
+[Install]
+WantedBy=multi-user.target

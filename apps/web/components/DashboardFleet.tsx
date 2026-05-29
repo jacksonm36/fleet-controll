@@ -1,18 +1,23 @@
 "use client";
 
 import type { FleetSummaryV1 } from "@fleet/types";
-import { useCallback, useEffect, useState } from "react";
+import dynamic from "next/dynamic";
+import Link from "next/link";
+import { useCallback, useState } from "react";
+import { EnrollmentFrontPanel } from "@/components/EnrollmentFrontPanel";
+import { TlsSnakeOilBanner } from "@/components/TlsSnakeOilBanner";
 import { usePolling } from "@/lib/usePolling";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import { apiFetch } from "@/lib/api";
+
+const FleetChart = dynamic(
+  () => import("./FleetChart").then((m) => m.FleetChart),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="h-72 animate-pulse rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))]" />
+    ),
+  },
+);
 
 export function DashboardFleet() {
   const [summary, setSummary] = useState<FleetSummaryV1 | null>(null);
@@ -20,7 +25,9 @@ export function DashboardFleet() {
 
   const loadSummary = useCallback(async () => {
     try {
-      const data = await apiFetch<FleetSummaryV1>("/api/fleet/summary");
+      const data = await apiFetch<FleetSummaryV1>("/api/fleet/summary", {
+        cacheTtlMs: 6_000,
+      });
       setSummary(data);
       setError(null);
     } catch (e) {
@@ -28,11 +35,7 @@ export function DashboardFleet() {
     }
   }, []);
 
-  useEffect(() => {
-    void loadSummary();
-  }, [loadSummary]);
-
-  usePolling(() => loadSummary(), 20_000);
+  usePolling(() => loadSummary(), 10_000);
 
   if (error) {
     return (
@@ -46,17 +49,13 @@ export function DashboardFleet() {
     return <div className="text-sm text-white/60">Loading fleet metrics…</div>;
   }
 
-  const chartData = [
-    { name: "Agents", value: summary.agentCount },
-    { name: "Online", value: summary.onlineCount },
-    { name: "Stale", value: summary.staleCount },
-    { name: "Pending jobs", value: summary.pendingJobs },
-    { name: "CrowdSec hosts", value: summary.crowdsecHosts },
-  ];
-
   const cards = [
     { label: "Agents", value: summary.agentCount },
     { label: "Online", value: summary.onlineCount },
+    { label: "Outdated apps", value: summary.outdatedPackagesCount },
+    { label: "Kernel updates", value: summary.kernelUpdatePendingCount },
+    { label: "CVE findings", value: summary.cveCount },
+    { label: "Critical CVEs", value: summary.cveCriticalCount },
     { label: "Tracked packages", value: summary.packagesTracked },
     { label: "Pending jobs", value: summary.pendingJobs },
     { label: "Reboot pending", value: summary.rebootRequiredCount },
@@ -65,6 +64,29 @@ export function DashboardFleet() {
 
   return (
     <div className="space-y-6">
+      <TlsSnakeOilBanner />
+      <EnrollmentFrontPanel agentCount={summary.agentCount} />
+
+      <Link
+        href="/automation"
+        className="flex flex-wrap items-center justify-between gap-3 rounded-xl border-2 border-[hsl(var(--accent))]/50 bg-gradient-to-r from-[hsl(var(--accent))]/15 to-transparent p-4 transition hover:border-[hsl(var(--accent))]"
+      >
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-[hsl(var(--accent))]">
+            Automation
+          </div>
+          <div className="text-base font-medium text-white">
+            Run shell, Ansible, and Terraform on your agents
+          </div>
+          <div className="mt-1 text-sm text-white/55">
+            Quick-start presets, script library, live job logs
+          </div>
+        </div>
+        <span className="rounded-md bg-[hsl(var(--accent))] px-4 py-2 text-sm font-semibold text-black">
+          Open Automation →
+        </span>
+      </Link>
+
       <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-6">
         {cards.map((c) => (
           <div
@@ -79,26 +101,7 @@ export function DashboardFleet() {
         ))}
       </div>
 
-      <div className="h-72 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4">
-        <div className="mb-3 text-sm font-medium text-white/80">
-          Fleet posture snapshot
-        </div>
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={chartData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-            <XAxis dataKey="name" stroke="#94a3b8" />
-            <YAxis stroke="#94a3b8" />
-            <Tooltip
-              contentStyle={{
-                background: "#0f172a",
-                borderColor: "#334155",
-                color: "#e2e8f0",
-              }}
-            />
-            <Bar dataKey="value" fill="hsl(var(--accent))" radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+      <FleetChart summary={summary} />
     </div>
   );
 }

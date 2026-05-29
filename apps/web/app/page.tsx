@@ -1,25 +1,15 @@
 "use client";
 
-import { useEffect } from "react";
-import { useRouter } from "next/navigation";
 import { Shell } from "@/components/Shell";
 import { AuthLoadingShell } from "@/components/AuthLoadingShell";
 import { DashboardFleet } from "@/components/DashboardFleet";
-import { getToken } from "@/lib/auth";
-import { useHydrated } from "@/lib/useHydrated";
+import { useSession } from "@/lib/useSession";
 
 export default function HomePage() {
-  const router = useRouter();
-  const hydrated = useHydrated();
+  const { hydrated, checked, authed } = useSession();
 
-  useEffect(() => {
-    if (!hydrated) return;
-    if (!getToken()) router.replace("/login");
-  }, [hydrated, router]);
-
-  if (!hydrated) return <AuthLoadingShell />;
-
-  if (!getToken()) return null;
+  if (!hydrated || !checked) return <AuthLoadingShell />;
+  if (!authed) return null;
 
   return (
     <Shell>

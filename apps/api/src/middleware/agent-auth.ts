@@ -1,12 +1,29 @@
 import type { Agent } from "@prisma/client";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { prisma } from "@fleet/db";
-import { sha256Hex } from "../lib/crypto.js";
+import { hashToken, prisma, sha256Hex } from "@fleet/db";
 
 export type AgentRequestContext = {
   agentId: string;
   agent: Agent;
 };
+
+export async function resolveAgentCredential(token: string) {
+  const argonHash = await hashToken(token);
+  let cred = await prisma.agentCredential.findFirst({
+    where: { secretHash: argonHash },
+    include: { agent: true },
+  });
+  if (cred) return cred;
+
+  const legacyHash = sha256Hex(token);
+  if (legacyHash !== argonHash) {
+    cred = await prisma.agentCredential.findFirst({
+      where: { secretHash: legacyHash },
+      include: { agent: true },
+    });
+  }
+  return cred;
+}
 
 export async function requireAgent(req: FastifyRequest, reply: FastifyReply) {
   const auth = req.headers.authorization;
@@ -17,11 +34,7 @@ export async function requireAgent(req: FastifyRequest, reply: FastifyReply) {
   if (!token) {
     return reply.code(401).send({ error: "missing_token" });
   }
-  const secretHash = sha256Hex(token);
-  const cred = await prisma.agentCredential.findFirst({
-    where: { secretHash },
-    include: { agent: true },
-  });
+  const cred = await resolveAgentCredential(token);
   if (!cred) {
     return reply.code(401).send({ error: "invalid_token" });
   }

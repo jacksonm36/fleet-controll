@@ -1,4 +1,10 @@
-import { clearToken, getToken } from "./auth";
+import { clearLegacyToken, getToken, logoutSession, markCookieSession } from "./auth";
+import {
+  cacheKey,
+  invalidateCachePrefix,
+  readCache,
+  writeCache,
+} from "./apiCache";
 
 function apiErrorBody(text: string): string {
   try {
@@ -7,10 +13,16 @@ function apiErrorBody(text: string): string {
       message?: unknown;
     };
     if (parsed && typeof parsed === "object") {
-      if (typeof parsed.error === "string" && parsed.error !== "Bad Request") {
+      if (typeof parsed.message === "string" && parsed.message.length > 0) {
+        return parsed.message;
+      }
+      if (
+        typeof parsed.error === "string" &&
+        parsed.error !== "Bad Request" &&
+        parsed.error !== "internal_error"
+      ) {
         return parsed.error;
       }
-      if (typeof parsed.message === "string") return parsed.message;
       if (typeof parsed.error === "string") return parsed.error;
     }
   } catch {
@@ -20,30 +32,55 @@ function apiErrorBody(text: string): string {
 }
 
 export function apiUrl(path: string): string {
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  // Browser: same-origin proxy via Next rewrites — httpOnly session cookies work.
+  if (typeof window !== "undefined") return normalized;
   const base = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
-  return `${base.replace(/\/$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
+  return `${base.replace(/\/$/, "")}${normalized}`;
 }
+
+export type ApiFetchOptions = RequestInit & {
+  /** Client-side GET cache TTL (ms). Default 0 = no cache. */
+  cacheTtlMs?: number;
+};
 
 export async function apiFetch<T>(
   path: string,
-  init: RequestInit = {},
+  init: ApiFetchOptions = {},
 ): Promise<T> {
+  const { cacheTtlMs = 0, ...fetchInit } = init;
+  const method = (fetchInit.method ?? "GET").toUpperCase();
+  const key = cacheKey(path, fetchInit);
+
+  if (method === "GET" && cacheTtlMs > 0) {
+    const cached = readCache<T>(key);
+    if (cached !== null) return cached;
+  }
+
   const token = getToken();
-  const headers = new Headers(init.headers);
+  const headers = new Headers(fetchInit.headers);
   const hasBody =
-    init.body !== undefined && init.body !== null && init.body !== "";
+    fetchInit.body !== undefined &&
+    fetchInit.body !== null &&
+    fetchInit.body !== "";
   if (hasBody && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
-  const res = await fetch(apiUrl(path), { ...init, headers });
+  const res = await fetch(apiUrl(path), {
+    ...fetchInit,
+    headers,
+    credentials: "include",
+  });
   if (res.status === 401) {
-    clearToken();
+    markCookieSession(null);
+    clearLegacyToken();
     if (
       typeof window !== "undefined" &&
       !path.includes("/api/auth/login")
     ) {
+      void logoutSession();
       window.location.href = "/login";
     }
   }
@@ -54,5 +91,11 @@ export async function apiFetch<T>(
     );
   }
   if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  const data = (await res.json()) as T;
+  if (method !== "GET") {
+    invalidateCachePrefix("/api/");
+  } else if (cacheTtlMs > 0) {
+    writeCache(key, data, cacheTtlMs);
+  }
+  return data;
 }

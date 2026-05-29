@@ -1,7 +1,7 @@
 import { prisma } from "@fleet/db";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { randomEnrollmentToken, sha256Hex } from "../lib/crypto.js";
+import { hashToken, randomEnrollmentToken } from "../lib/crypto.js";
 import { assertOperator, requireUser } from "../middleware/auth.js";
 
 export async function enrollmentRoutes(app: FastifyInstance) {
@@ -17,7 +17,7 @@ export async function enrollmentRoutes(app: FastifyInstance) {
       if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
       const ttl = parsed.data.ttlMinutes ?? 60;
       const plain = randomEnrollmentToken();
-      const tokenHash = sha256Hex(plain);
+      const tokenHash = await hashToken(plain);
       const expiresAt = new Date(Date.now() + ttl * 60 * 1000);
       await prisma.enrollmentToken.create({
         data: {

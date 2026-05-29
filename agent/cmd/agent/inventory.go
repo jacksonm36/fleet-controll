@@ -59,15 +59,44 @@ func rebootRequired() bool {
 
 func collectInventory(sudo bool) (map[string]any, error) {
 	packages := collectPackages(sudo)
+	pending := collectPendingUpdates(sudo)
+	applyPendingToPackages(packages, pending)
+	kernel := collectKernelInfo(sudo)
+
 	services := collectServices(sudo)
+	containers := collectContainers(sudo)
+
+	reboot := false
+	if v, ok := kernel["rebootRequired"].(bool); ok && v {
+		reboot = true
+	}
+	if !reboot {
+		reboot = rebootRequired()
+	}
+
+	vulns := collectVulnerabilities(sudo)
+	primaryIP, ipAddresses := collectHostAddresses()
+	host := map[string]any{}
+	if primaryIP != "" {
+		host["primaryIp"] = primaryIP
+	}
+	if len(ipAddresses) > 0 {
+		host["addresses"] = ipAddresses
+	}
 
 	payload := map[string]any{
-		"schemaVersion":     1,
-		"collectedAt":       time.Now().UTC().Format(time.RFC3339),
-		"packages":          packages,
-		"services":          services,
-		"rebootRequired":    rebootRequired(),
-		"crowdsecInstalled": crowdsecInstalledHint(),
+		"schemaVersion":          1,
+		"collectedAt":            time.Now().UTC().Format(time.RFC3339),
+		"packages":               packages,
+		"services":               services,
+		"containers":             containers,
+		"kernel":                 kernel,
+		"packageUpdatesPending":  len(pending),
+		"vulnerabilities":        vulns,
+		"osDetail":               collectOSDetail(),
+		"rebootRequired":         reboot,
+		"crowdsecInstalled":      crowdsecInstalledHint(),
+		"host":                   host,
 	}
 	return payload, nil
 }
@@ -81,63 +110,6 @@ func collectPackages(sudo bool) []map[string]any {
 	default:
 		return []map[string]any{}
 	}
-}
-
-func collectPackagesLinux(sudo bool) []map[string]any {
-	// Prefer dpkg when available (Debian/Ubuntu derivatives).
-	if _, err := exec.LookPath("dpkg-query"); err == nil {
-		cmd := exec.Command("dpkg-query", "-W", "-f", `${Package}\t${Version}\n`)
-		out, err := cmd.Output()
-		if err != nil {
-			return []map[string]any{}
-		}
-		var rows []map[string]any
-		for _, line := range strings.Split(string(out), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			parts := strings.SplitN(line, "\t", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			rows = append(rows, map[string]any{
-				"name":    parts[0],
-				"version": parts[1],
-				"manager": "dpkg",
-				"source":  "installed",
-			})
-		}
-		return rows
-	}
-
-	if _, err := exec.LookPath("rpm"); err == nil {
-		cmd := exec.Command("rpm", "-qa", "--qf", "%{NAME}\t%{VERSION}-%{RELEASE}\n")
-		out, err := cmd.Output()
-		if err != nil {
-			return []map[string]any{}
-		}
-		var rows []map[string]any
-		for _, line := range strings.Split(string(out), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			parts := strings.SplitN(line, "\t", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			rows = append(rows, map[string]any{
-				"name":    parts[0],
-				"version": parts[1],
-				"manager": "rpm",
-				"source":  "installed",
-			})
-		}
-		return rows
-	}
-
-	return []map[string]any{}
 }
 
 func collectPackagesWindows() []map[string]any {
@@ -192,53 +164,14 @@ func collectPackagesWindows() []map[string]any {
 func collectServices(sudo bool) []map[string]any {
 	switch runtime.GOOS {
 	case "linux":
-		return collectServicesLinux(sudo)
+		return collectServicesLinuxImproved(sudo)
 	case "windows":
 		return collectServicesWindows()
+	case "darwin":
+		return collectServicesDarwin()
 	default:
 		return []map[string]any{}
 	}
-}
-
-func collectServicesLinux(sudo bool) []map[string]any {
-	systemctl := "systemctl"
-	args := []string{"list-units", "--type=service", "--no-pager", "--no-legend"}
-	cmd := exec.Command(systemctl, args...)
-	if sudo && os.Geteuid() != 0 {
-		cmd = exec.Command("sudo", append([]string{"-n", systemctl}, args...)...)
-	}
-
-	out, err := cmd.Output()
-	if err != nil {
-		return []map[string]any{}
-	}
-
-	var rows []map[string]any
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 1 {
-			continue
-		}
-		name := fields[0]
-		state := "unknown"
-		if len(fields) >= 4 {
-			state = fields[3]
-		}
-		rows = append(rows, map[string]any{
-			"name":    name,
-			"kind":    "systemd",
-			"state":   state,
-			"enabled": strings.Contains(strings.ToLower(line), "enabled"),
-		})
-		if len(rows) >= 400 {
-			break
-		}
-	}
-	return rows
 }
 
 func collectServicesWindows() []map[string]any {

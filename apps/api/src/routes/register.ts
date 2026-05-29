@@ -1,8 +1,11 @@
+import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import jwt from "@fastify/jwt";
 import websocket from "@fastify/websocket";
 import type { FastifyInstance } from "fastify";
 import { resolveCorsOrigins, resolveJwtSecret } from "../lib/env.js";
+import { requireAgentTls } from "../middleware/require-tls.js";
+import { SESSION_COOKIE } from "../lib/session.js";
 import {
   registerAuthRateLimit,
   registerSecurityPlugins,
@@ -11,14 +14,22 @@ import { agentV1Routes } from "./agent-v1.js";
 import { agentWsRoutes } from "./agent-ws.js";
 import { agentsRoutes } from "./agents.js";
 import { authRoutes } from "./auth.js";
+import { usersRoutes } from "./users.js";
 import { crowdsecRoutes } from "./crowdsec-human.js";
 import { agentInstallPublicRoutes } from "./agent-install-public.js";
 import { enrollmentRoutes } from "./enrollment.js";
 import { fleetRoutes } from "./fleet.js";
 import { jobsRoutes } from "./jobs.js";
+import { observabilityRoutes } from "./observability.js";
+import { patchPlansRoutes } from "./patch-plans.js";
+import { scriptsRoutes } from "./scripts.js";
 
 export async function registerRoutes(app: FastifyInstance) {
-  app.get("/health", async () => ({ ok: true }));
+  app.get("/health", async () => {
+    const { redisPing } = await import("../lib/redis.js");
+    const redis = await redisPing();
+    return { ok: true, redis };
+  });
 
   await app.register(agentInstallPublicRoutes, { prefix: "/api/public" });
   await app.register(
@@ -29,12 +40,22 @@ export async function registerRoutes(app: FastifyInstance) {
     { prefix: "/api/auth" },
   );
   await app.register(enrollmentRoutes, { prefix: "/api/enrollment-tokens" });
+  await app.register(usersRoutes, { prefix: "/api/users" });
   await app.register(agentsRoutes, { prefix: "/api/agents" });
   await app.register(jobsRoutes, { prefix: "/api/jobs" });
+  await app.register(patchPlansRoutes, { prefix: "/api/patch-plans" });
+  await app.register(scriptsRoutes, { prefix: "/api/scripts" });
   await app.register(fleetRoutes, { prefix: "/api/fleet" });
+  await app.register(observabilityRoutes, { prefix: "/api/observability" });
   await app.register(crowdsecRoutes, { prefix: "/api/crowdsec" });
-  await app.register(agentV1Routes, { prefix: "/api/agent/v1" });
-  await app.register(agentWsRoutes, { prefix: "/api/agent/v1" });
+  await app.register(
+    async (agentScope) => {
+      agentScope.addHook("onRequest", requireAgentTls);
+      await agentScope.register(agentV1Routes);
+      await agentScope.register(agentWsRoutes);
+    },
+    { prefix: "/api/agent/v1" },
+  );
 }
 
 export async function registerPlugins(app: FastifyInstance) {
@@ -64,7 +85,15 @@ export async function registerPlugins(app: FastifyInstance) {
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
 
-  await app.register(jwt, { secret: resolveJwtSecret() });
+  await app.register(cookie);
+
+  await app.register(jwt, {
+    secret: resolveJwtSecret(),
+    cookie: {
+      cookieName: SESSION_COOKIE,
+      signed: false,
+    },
+  });
 
   await app.register(websocket);
 }

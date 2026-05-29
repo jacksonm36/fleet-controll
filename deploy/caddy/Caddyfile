@@ -1,0 +1,36 @@
+# TLS reverse proxy for Fleet controller (API + Web UI).
+#
+# Usage:
+#   export FLEET_DOMAIN=192.168.1.178   # or fleet.example.com
+#   sudo bash scripts/setup-fleet-tls.sh
+#
+# Agents and browsers use https://$FLEET_DOMAIN (port 443).
+# Caddy forwards to local fleet-api (4000) and fleet-web (3000).
+
+{
+	# For LAN IP or internal hostname without public DNS:
+	auto_https disable_redirects
+}
+
+${FLEET_DOMAIN} {
+	tls internal
+
+	handle /health {
+		reverse_proxy 127.0.0.1:4000
+	}
+	handle /api/* {
+		reverse_proxy 127.0.0.1:4000
+	}
+	handle /_next/* {
+		reverse_proxy 127.0.0.1:3000
+	}
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+}
+
+# Optional: expose API on a dedicated host/port
+# :4443 {
+# 	tls internal
+# 	reverse_proxy 127.0.0.1:4000
+# }

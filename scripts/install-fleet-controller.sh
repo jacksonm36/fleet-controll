@@ -81,8 +81,9 @@ main() {
 	fi
 
 	echo ""
-	echo "Start manually:  cd $INSTALL_DIR && npm run dev"
-	echo "Agent install:   curl -fsSL http://127.0.0.1:4000/api/public/agent-install.sh | FLEET_ENROLL_TOKEN='…' bash"
+	echo "Systemd (boot on startup):  sudo bash $INSTALL_DIR/scripts/install-fleet-systemd.sh"
+	echo "Start manually:            cd $INSTALL_DIR && npm run dev"
+	echo "Agent install:             curl -fsSL http://127.0.0.1:4000/api/public/agent-install.sh | FLEET_ENROLL_TOKEN='…' bash"
 }
 
 main "$@"

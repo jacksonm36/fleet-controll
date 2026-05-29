@@ -1,0 +1,4 @@
+NOTE: This is a simulation run!
+Inst bash [5.2.15-2+b7] (5.2.15-2+b8 Debian-Security:12/stable [amd64])
+Inst openssl [3.0.14-1~deb12u1] (3.0.15-1~deb12u1 Debian-Security:12/stable [amd64])
+Inst curl [7.88.1-10+deb12u7] (7.88.1-10+deb12u8 stable [amd64])
