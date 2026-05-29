@@ -16,7 +16,9 @@ for (const envPath of [
 
 async function main() {
   const { resolveJwtSecret, resolveTrustProxy } = await import("./lib/env.js");
+  const { assertProductionSecrets } = await import("./lib/security-config.js");
   resolveJwtSecret();
+  assertProductionSecrets();
 
   const app = Fastify({
     logger: true,

@@ -1,3 +1,4 @@
+/** Restrict with e.g. fleet-agent\\.service|nginx\\.service — default allows all (lab). */
 const raw = process.env.SERVICE_ALLOWLIST ?? ".*";
 
 let serviceAllowlistRegex: RegExp;

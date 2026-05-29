@@ -1,6 +1,11 @@
 import type { Agent } from "@prisma/client";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { hashToken, prisma, sha256Hex } from "@fleet/db";
+import {
+  hashToken,
+  isLegacySha256Hash,
+  prisma,
+  sha256Hex,
+} from "@fleet/db";
 
 export type AgentRequestContext = {
   agentId: string;
@@ -21,6 +26,14 @@ export async function resolveAgentCredential(token: string) {
       where: { secretHash: legacyHash },
       include: { agent: true },
     });
+    if (cred && isLegacySha256Hash(cred.secretHash)) {
+      const upgraded = await hashToken(token);
+      await prisma.agentCredential.update({
+        where: { id: cred.id },
+        data: { secretHash: upgraded },
+      });
+      cred = { ...cred, secretHash: upgraded };
+    }
   }
   return cred;
 }

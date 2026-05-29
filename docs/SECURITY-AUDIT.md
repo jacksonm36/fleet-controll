@@ -1,42 +1,42 @@
-# Security review (pre-publish)
+# Security review
 
-Last reviewed before public GitHub push. Use as a deployment checklist, not a formal certification.
+Deployment checklist for Fleet Patch Control. Not a formal certification.
 
-## Strengths
+## Implemented controls
 
-- **Session auth**: Operator UI uses JWT in httpOnly cookies; agent API uses per-agent bearer tokens (Argon2id-hashed at rest).
-- **RBAC**: `VIEWER` vs operator roles; destructive actions require operator/admin.
-- **Rate limiting**: Global API limits plus stricter login rate limits (`apps/api/src/plugins/security.ts`).
-- **Helmet**: Security headers; optional HSTS when TLS is enabled.
-- **Patch safety**: Direct `PACKAGE_UPGRADE` without an approved patch plan is rejected by the API.
-- **Service jobs**: Linux service actions gated by `SERVICE_ALLOWLIST` regex.
-- **Secrets**: `.env` is gitignored; `.env.example` uses placeholders only.
-- **Job lifecycle**: Stale `RUNNING` jobs are requeued/failed (`apps/api/src/lib/job-reconcile.ts`).
+| Control | Location |
+|---------|----------|
+| Strong passwords (12+ chars, letter+digit, block common) | `@fleet/types` / API auth / users |
+| JWT + optional `TOKEN_PEPPER` required in production | `security-config.ts`, `env.ts` |
+| Session `SameSite=Lax` in production (CSRF reduction) | `session.ts` |
+| Enrollment rate limit per IP | `registerEnrollRateLimit` → `/api/agent/v1/enroll` |
+| Hostname validation on enroll | `agent-enroll.ts` |
+| Legacy SHA-256 agent tokens upgraded on use | `agent-auth.ts` |
+| WebSocket: query `?token=` rejected in production | `agent-ws.ts` |
+| `AUTOMATION_DISABLE_SHELL` blocks shell jobs | `automation-guard.ts` |
+| Admin security checklist API | `GET /api/fleet/security` |
+| Stale job reconciliation | `job-reconcile.ts` |
+| Service allowlist regex | `SERVICE_ALLOWLIST` |
+| CSP report-only (optional) | `CSP_REPORT_ONLY=1` |
 
-## Risks to mitigate in production
+## Production checklist
 
-| Area | Risk | Mitigation |
-|------|------|------------|
-| Bootstrap | Default seed password if `SEED_ADMIN_PASSWORD` unset | Run `npm run env:generate`, set strong password, `npm run db:seed` |
-| JWT | Weak `JWT_SECRET` | 32+ random bytes; never commit `.env` |
-| TLS | Cleartext controller traffic | `FLEET_REQUIRE_TLS=1`, nginx/Caddy, valid certs |
-| Automation | `SHELL_SCRIPT` / Ansible / Terraform jobs run arbitrary code on agents | Restrict operator accounts; audit `AuditEvent`; least-privilege agent sudo |
-| Enrollment | One-time enrollment tokens | Short TTL; mint per host; HTTPS only |
-| Influx/Grafana | Example tokens in `.env.example` | Replace in production |
-| Agent binary | Supply-chain on install scripts | Pin release SHA / use private mirror |
+1. `npm run env:generate` → set `JWT_SECRET`, `SEED_ADMIN_PASSWORD`, `TOKEN_PEPPER`
+2. `FLEET_REQUIRE_TLS=1`, nginx/Caddy, do not expose API :4000 publicly
+3. Tighten `SERVICE_ALLOWLIST` (not `.*`)
+4. Set `CORS_ORIGIN` to your UI origin(s)
+5. `AUTOMATION_DISABLE_SHELL=1` if you do not need arbitrary shell jobs
+6. Enable MFA / passkeys for admin accounts (Settings)
+7. Review **Settings → Controller security** (admin only)
+8. Replace Influx/Grafana default passwords; firewall observability ports
 
-## Known limitations (accepted for lab/homelab)
+## Residual risks
 
-- Enrollment install scripts may use `curl \| bash` (documented; use HTTPS + pinned CA).
-- `SHELL_SCRIPT` is intentionally powerful for automation.
-- CSP is disabled for Next.js compatibility (`contentSecurityPolicy: false`).
-
-## Bug fixes included in this release
-
-- Stuck jobs reconciled on heartbeat, poll, and periodic timer.
-- Binary upgrade deadlock avoided via detached upgrade helper.
-- Agent presence grace during binary upgrades.
+- **Automation** (Ansible, Terraform, shell) runs code on agents with agent privileges.
+- **curl \| bash** install path — use HTTPS and pinned CA.
+- **CSP** is off by default; enable report-only first (`CSP_REPORT_ONLY=1`).
+- **VIEWER** role can read fleet data; cannot mutate.
 
 ## Reporting
 
-Open a private security issue on [github.com/jacksonm36/fleet-controll](https://github.com/jacksonm36/fleet-controll) for vulnerabilities.
+Open a security issue on [github.com/jacksonm36/fleet-controll](https://github.com/jacksonm36/fleet-controll).

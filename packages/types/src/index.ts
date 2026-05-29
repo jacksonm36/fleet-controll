@@ -232,3 +232,9 @@ export interface CveFindingV1 {
   source: string;
   scannedAt: string;
 }
+
+export {
+  passwordMinLength,
+  passwordPolicyHint,
+  validateNewPassword,
+} from "./password-policy.js";

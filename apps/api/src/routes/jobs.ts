@@ -10,6 +10,7 @@ import {
 } from "../lib/patch-plans.js";
 import { reconcileStaleJobsForAgent } from "../lib/job-reconcile.js";
 import { subscribeJobLog } from "../lib/job-bus.js";
+import { rejectShellAutomationIfDisabled } from "../lib/automation-guard.js";
 import { isServiceActionAllowed } from "../lib/service-allowlist.js";
 import { assertOperator, requireUser } from "../middleware/auth.js";
 
@@ -68,6 +69,8 @@ export async function jobsRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "invalid_body" });
       }
       const { agentId, type, payload } = parsed.data;
+      if (rejectShellAutomationIfDisabled(type, reply)) return;
+
       const agent = await prisma.agent.findUnique({ where: { id: agentId } });
       if (!agent) return reply.code(404).send({ error: "agent_not_found" });
 

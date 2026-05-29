@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { WebSocket } from "ws";
+import { isProduction } from "../lib/env.js";
 import { resolveAgentCredential } from "../middleware/agent-auth.js";
 import {
   registerAgentSocket,
@@ -9,6 +10,7 @@ import {
 function tokenFromRequest(
   url: string,
   authorization?: string | string[],
+  log?: { warn: (obj: object, msg: string) => void },
 ): string | null {
   const auth = Array.isArray(authorization) ? authorization[0] : authorization;
   if (auth?.startsWith("Bearer ")) {
@@ -18,7 +20,14 @@ function tokenFromRequest(
   const q = url.indexOf("?");
   if (q === -1) return null;
   const params = new URLSearchParams(url.slice(q + 1));
-  return params.get("token");
+  const queryToken = params.get("token");
+  if (!queryToken) return null;
+  if (isProduction()) {
+    log?.warn({}, "websocket token in query string rejected in production");
+    return null;
+  }
+  log?.warn({}, "websocket token via query string is deprecated; use Authorization header");
+  return queryToken;
 }
 
 /** @fastify/websocket v11 passes WebSocket directly; older versions use { socket }. */
@@ -53,6 +62,7 @@ export async function agentWsRoutes(app: FastifyInstance) {
       const token = tokenFromRequest(
         req.url ?? "",
         req.headers.authorization,
+        app.log,
       );
 
       if (!token) {

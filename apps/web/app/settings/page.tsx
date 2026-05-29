@@ -7,7 +7,8 @@ import { Shell } from "@/components/Shell";
 import { AuthLoadingShell } from "@/components/AuthLoadingShell";
 import { apiFetch } from "@/lib/api";
 import { logoutSession, markCookieSession } from "@/lib/auth";
-import { passwordPolicyHint } from "@/lib/password-policy";
+import { SecurityChecklist } from "@/components/SecurityChecklist";
+import { passwordPolicyHint, validateNewPassword } from "@/lib/password-policy";
 import { useSession } from "@/lib/useSession";
 import { useRouter } from "next/navigation";
 
@@ -98,6 +99,11 @@ export default function SettingsPage() {
     setMsg(null);
     if (newPassword !== confirmPassword) {
       setErr("New passwords do not match");
+      return;
+    }
+    const policyErr = validateNewPassword(newPassword);
+    if (policyErr) {
+      setErr(policyErr);
       return;
     }
     setBusy("password");
@@ -433,6 +439,20 @@ export default function SettingsPage() {
             ) : null}
           </ul>
         </section>
+
+        {user?.role === "ADMIN" ? (
+          <section className="rounded-xl border border-white/10 bg-white/5 p-5">
+            <h2 className="text-lg font-medium">Controller security</h2>
+            <p className="mt-1 text-sm text-white/55">
+              Runtime checks for weak secrets, TLS, and risky defaults. See{" "}
+              <code className="text-xs">docs/SECURITY-AUDIT.md</code> for the full
+              checklist.
+            </p>
+            <div className="mt-4">
+              <SecurityChecklist admin />
+            </div>
+          </section>
+        ) : null}
       </div>
     </Shell>
   );

@@ -1,3 +1,5 @@
-export function passwordPolicyHint(): string {
-  return "Any non-empty password is accepted";
-}
+export {
+  passwordMinLength,
+  passwordPolicyHint,
+  validateNewPassword,
+} from "@fleet/types";

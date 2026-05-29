@@ -61,3 +61,9 @@ export function fleetHstsEnabled(): boolean {
   if (raw === "0" || raw === "false") return false;
   return fleetRequireTls();
 }
+
+/** When true, Content-Security-Policy is sent in report-only mode (browser devtools). */
+export function cspReportOnlyEnabled(): boolean {
+  const raw = process.env.CSP_REPORT_ONLY?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}

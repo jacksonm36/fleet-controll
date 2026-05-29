@@ -10,6 +10,7 @@ import {
 } from "../lib/automation.js";
 import { invalidateFleetCaches } from "../lib/cache.js";
 import { notifyAgent } from "../lib/agent-sockets.js";
+import { rejectShellAutomationIfDisabled } from "../lib/automation-guard.js";
 import { assertOperator, requireUser } from "../middleware/auth.js";
 
 const toolEnum = z.enum([
@@ -133,6 +134,8 @@ export async function scriptsRoutes(app: FastifyInstance) {
 
       const jobType = (parsed.data.jobType ??
         toolToDefaultJobType(script.tool as AutomationTool)) as JobType;
+
+      if (rejectShellAutomationIfDisabled(jobType, reply)) return;
 
       const payload = buildPayloadFromScript(
         script.tool as AutomationTool,

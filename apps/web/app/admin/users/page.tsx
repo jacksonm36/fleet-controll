@@ -5,7 +5,7 @@ import { Shell } from "@/components/Shell";
 import { AuthLoadingShell } from "@/components/AuthLoadingShell";
 import { apiFetch } from "@/lib/api";
 import { getSessionUser } from "@/lib/auth";
-import { passwordPolicyHint } from "@/lib/password-policy";
+import { passwordPolicyHint, validateNewPassword } from "@/lib/password-policy";
 import { useSession } from "@/lib/useSession";
 import { useRouter } from "next/navigation";
 
@@ -56,6 +56,11 @@ export default function AdminUsersPage() {
 
   async function createUser(e: React.FormEvent) {
     e.preventDefault();
+    const policyErr = validateNewPassword(newPassword);
+    if (policyErr) {
+      setErr(policyErr);
+      return;
+    }
     setBusy("create");
     setErr(null);
     try {
@@ -291,7 +296,13 @@ export default function AdminUsersPage() {
                         disabled={!!busy}
                         onClick={() => {
                           const pw = window.prompt("New password for this user");
-                          if (pw) void updateUser(u.id, { password: pw });
+                          if (!pw) return;
+                          const policyErr = validateNewPassword(pw);
+                          if (policyErr) {
+                            setErr(policyErr);
+                            return;
+                          }
+                          void updateUser(u.id, { password: pw });
                         }}
                         className="text-xs text-[hsl(var(--accent))] hover:underline disabled:opacity-50"
                       >

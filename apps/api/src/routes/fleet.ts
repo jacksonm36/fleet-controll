@@ -18,9 +18,27 @@ import {
   secureCentralApiUrl,
   securePublicBase,
 } from "../lib/fleet-urls.js";
-import { requireUser } from "../middleware/auth.js";
+import { runSecurityChecks } from "../lib/security-config.js";
+import { assertAdmin, requireUser } from "../middleware/auth.js";
 
 export async function fleetRoutes(app: FastifyInstance) {
+  app.get(
+    "/security",
+    { preHandler: requireUser },
+    async (req, reply) => {
+      if (!assertAdmin(req, reply)) return;
+      const checks = runSecurityChecks();
+      const critical = checks.filter((c) => c.severity === "critical").length;
+      const warning = checks.filter((c) => c.severity === "warning").length;
+      return {
+        ok: critical === 0,
+        critical,
+        warning,
+        checks,
+      };
+    },
+  );
+
   app.get(
     "/summary",
     { preHandler: requireUser },

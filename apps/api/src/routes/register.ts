@@ -8,8 +8,10 @@ import { requireAgentTls } from "../middleware/require-tls.js";
 import { SESSION_COOKIE } from "../lib/session.js";
 import {
   registerAuthRateLimit,
+  registerEnrollRateLimit,
   registerSecurityPlugins,
 } from "../plugins/security.js";
+import { agentEnrollRoutes } from "./agent-enroll.js";
 import { agentV1Routes } from "./agent-v1.js";
 import { agentWsRoutes } from "./agent-ws.js";
 import { agentsRoutes } from "./agents.js";
@@ -51,6 +53,13 @@ export async function registerRoutes(app: FastifyInstance) {
   await app.register(
     async (agentScope) => {
       agentScope.addHook("onRequest", requireAgentTls);
+      await agentScope.register(
+        async (enrollScope) => {
+          await registerEnrollRateLimit(enrollScope);
+          await enrollScope.register(agentEnrollRoutes);
+        },
+        { prefix: "/enroll" },
+      );
       await agentScope.register(agentV1Routes);
       await agentScope.register(agentWsRoutes);
     },

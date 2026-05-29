@@ -2,7 +2,6 @@ import { prisma } from "@fleet/db";
 import type { JobStatus } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { hashToken, randomAgentToken, sha256Hex } from "../lib/crypto.js";
 import { invalidateFleetCaches } from "../lib/cache.js";
 import {
   agentNeedsBinaryUpdate,
@@ -36,15 +35,6 @@ import {
   handlePatchPlanJobComplete,
 } from "../lib/patch-plans.js";
 import { requireAgent } from "../middleware/agent-auth.js";
-
-const enrollSchema = z.object({
-  token: z.string().min(8),
-  hostname: z.string().min(1),
-  // Agents send runtime.OS (darwin on macOS). Stored as opaque string on Agent.
-  osType: z.enum(["linux", "windows", "darwin"]),
-  osDetail: z.string().optional(),
-  version: z.string().optional(),
-});
 
 const inventoryPackageSchema = z.object({
   name: z.string().min(1),
@@ -216,57 +206,6 @@ const snapshotSchema = z.object({
 });
 
 export async function agentV1Routes(app: FastifyInstance) {
-  app.post("/enroll", async (req, reply) => {
-    const parsed = enrollSchema.safeParse(req.body);
-    if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
-    const { token, hostname, osType, osDetail, version } = parsed.data;
-    const argonTokenHash = await hashToken(token);
-    let et = await prisma.enrollmentToken.findFirst({
-      where: { tokenHash: argonTokenHash, expiresAt: { gt: new Date() } },
-    });
-    if (!et) {
-      const legacyHash = sha256Hex(token);
-      et = await prisma.enrollmentToken.findFirst({
-        where: { tokenHash: legacyHash, expiresAt: { gt: new Date() } },
-      });
-    }
-    if (!et) return reply.code(400).send({ error: "invalid_or_expired_token" });
-
-    await prisma.enrollmentToken.delete({ where: { id: et.id } });
-
-    const plainApiToken = randomAgentToken();
-    const secretHash = await hashToken(plainApiToken);
-
-    const agent = await prisma.agent.create({
-      data: {
-        hostname,
-        osType,
-        osDetail,
-        version,
-        enrolledAt: new Date(),
-        status: "OFFLINE",
-        rebootRequired: false,
-        crowdsecInstalled: false,
-      },
-    });
-
-    await prisma.agentCredential.create({
-      data: { agentId: agent.id, secretHash },
-    });
-
-    await prisma.auditEvent.create({
-      data: {
-        action: "agent_enrolled",
-        meta: { agentId: agent.id, hostname },
-      },
-    });
-
-    return {
-      agentId: agent.id,
-      apiToken: plainApiToken,
-    };
-  });
-
   app.post(
     "/heartbeat",
     { preHandler: requireAgent },
