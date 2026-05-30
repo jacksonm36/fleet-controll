@@ -7,7 +7,9 @@ const sockets = new Map<string, AgentSocket>();
 
 export function registerAgentSocket(agentId: string, socket: AgentSocket): void {
   const existing = sockets.get(agentId);
-  existing?.close?.();
+  if (existing && existing !== socket) {
+    existing.close?.();
+  }
   sockets.set(agentId, socket);
 }
 

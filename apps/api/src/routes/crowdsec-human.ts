@@ -2,21 +2,47 @@ import { prisma } from "@fleet/db";
 import type { AppInstance } from "../types/app-instance.js";
 import { z } from "zod";
 import { isAgentOnline } from "../lib/agent-presence.js";
+import { notifyAgent } from "../lib/agent-sockets.js";
 import { cacheWrap, invalidateFleetCaches } from "../lib/cache.js";
 import {
   buildCrowdSecStatus,
   countCrowdSecDecisions,
   flattenCrowdSecDecisions,
+  type CrowdSecAgentRow,
   parseCrowdSecAlert,
   parseCrowdSecDecision,
   summarizeCrowdSecPayload,
 } from "../lib/crowdsec-parse.js";
-
-function asArray(v: unknown): unknown[] {
-  return Array.isArray(v) ? v : [];
-}
-import { notifyAgent } from "../lib/agent-sockets.js";
 import { assertOperator, requireUser } from "../middleware/auth.js";
+
+const crowdsecAgentSelect = {
+  id: true,
+  hostname: true,
+  osType: true,
+  osDetail: true,
+  status: true,
+  lastSeenAt: true,
+  crowdsecInstalled: true,
+  crowdSecSnapshots: {
+    select: { payload: true, capturedAt: true },
+  },
+} as const;
+
+type CrowdSecAgentDbRow = {
+  id: string;
+  hostname: string;
+  osType: string;
+  osDetail: string | null;
+  status: string;
+  lastSeenAt: Date | null;
+  crowdsecInstalled: boolean;
+  crowdSecSnapshots: { payload: unknown; capturedAt: Date }[];
+};
+
+type AgentPresencePick = {
+  lastSeenAt: Date | null;
+  status: string;
+};
 
 export async function crowdsecRoutes(app: AppInstance) {
   app.get(
@@ -36,7 +62,7 @@ export async function crowdsecRoutes(app: AppInstance) {
         ]);
         return buildCrowdSecStatus(
           snaps,
-          allAgents.map((a) => ({
+          allAgents.map((a: AgentPresencePick) => ({
             online: isAgentOnline(a.lastSeenAt, a.status, now),
           })),
           enrolledAgents,
@@ -55,21 +81,10 @@ export async function crowdsecRoutes(app: AppInstance) {
         const now = Date.now();
         const agents = await prisma.agent.findMany({
           orderBy: { hostname: "asc" },
-          select: {
-            id: true,
-            hostname: true,
-            osType: true,
-            osDetail: true,
-            status: true,
-            lastSeenAt: true,
-            crowdsecInstalled: true,
-            crowdSecSnapshots: {
-              select: { payload: true, capturedAt: true },
-            },
-          },
+          select: crowdsecAgentSelect,
         });
 
-        const rows = agents.map((a) => {
+        const rows = agents.map((a: CrowdSecAgentDbRow) => {
           const snap = a.crowdSecSnapshots[0] ?? null;
           return summarizeCrowdSecPayload(snap?.payload, {
             agentId: a.id,
@@ -83,8 +98,8 @@ export async function crowdsecRoutes(app: AppInstance) {
           });
         });
 
-        const reporting = rows.filter((r) => r.reporting);
-        const notReporting = rows.filter((r) => !r.reporting);
+        const reporting = rows.filter((r: CrowdSecAgentRow) => r.reporting);
+        const notReporting = rows.filter((r: CrowdSecAgentRow) => !r.reporting);
 
         return {
           agents: rows,

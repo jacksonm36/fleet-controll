@@ -10,7 +10,11 @@ import { PatchPanel } from "@/components/PatchPanel";
 import { CrowdSecAgentTab } from "@/components/CrowdSecAgentTab";
 import { OsInfo } from "@/components/OsInfo";
 import { apiFetch } from "@/lib/api";
-import { pickActivePatchPlan } from "@/lib/patch-ui";
+import {
+  pickActivePatchPlan,
+  resolvePlanJobId,
+  type PatchPlanLike,
+} from "@/lib/patch-ui";
 import { osSummaryLine } from "@/lib/os-display";
 import { usePolling } from "@/lib/usePolling";
 import { useSession } from "@/lib/useSession";
@@ -206,6 +210,8 @@ export default function AgentDetailPage() {
   const [serviceName, setServiceName] = useState("nginx.service");
   const [jobOpen, setJobOpen] = useState<string | null>(null);
   const [consoleJobId, setConsoleJobId] = useState<string | null>(null);
+  const [consoleLogEpoch, setConsoleLogEpoch] = useState(0);
+  const [consoleJobPinned, setConsoleJobPinned] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
@@ -316,6 +322,32 @@ export default function AgentDetailPage() {
     [patchPlans, activePlanId],
   );
 
+  function setConsoleJobSelection(
+    jobId: string | null,
+    opts?: { pin?: boolean; reload?: boolean },
+  ) {
+    setConsoleJobId(jobId);
+    setConsoleJobPinned(opts?.pin ?? !!jobId);
+    if (opts?.reload) setConsoleLogEpoch((n) => n + 1);
+  }
+
+  function openPatchPlan(pl: PatchPlanLike) {
+    setActivePlanId(pl.id);
+    setSelectedPlanPackages(new Set((pl.packages ?? []).map((pkg) => pkg.name)));
+    const jid = resolvePlanJobId(pl, jobs);
+    if (jid) {
+      setConsoleJobSelection(jid, { pin: true, reload: true });
+    } else {
+      setActionMsg({
+        kind: "err",
+        text: "No job logs for this patch run yet. Run a new check or wait for the agent to finish.",
+      });
+    }
+    document
+      .getElementById("fleet-activity-console")
+      ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
   async function createPatchPlan() {
     if (agent?.osType === "windows") {
       setActionMsg({
@@ -340,7 +372,9 @@ export default function AgentDetailPage() {
       );
       setActivePlanId(res.id);
       setTab("patches");
-      if (res.dryRunJob?.id) setConsoleJobId(res.dryRunJob.id);
+      if (res.dryRunJob?.id) {
+        setConsoleJobSelection(res.dryRunJob.id, { pin: true, reload: true });
+      }
       setActionMsg({
         kind: "ok",
         text: "Dry-run queued — updates will appear here when the check finishes.",
@@ -1439,7 +1473,9 @@ export default function AgentDetailPage() {
             activePlan={activePlan}
             jobs={jobs}
             selectedJobId={consoleJobId}
-            onSelectJobId={setConsoleJobId}
+            onSelectJobId={setConsoleJobSelection}
+            consoleLogEpoch={consoleLogEpoch}
+            pinConsoleJob={consoleJobPinned}
             binaryUpgrading={agent.binaryUpgradeInProgress}
             binaryUpgradeError={agent.binaryUpgradeLastError}
             agentVersion={agent.version}
@@ -1482,7 +1518,10 @@ export default function AgentDetailPage() {
             onClearSelection={() => setSelectedPlanPackages(new Set())}
             jobs={jobs}
             consoleJobId={consoleJobId}
-            onConsoleJobId={setConsoleJobId}
+            onConsoleJobId={setConsoleJobSelection}
+            onOpenPlan={openPatchPlan}
+            consoleLogEpoch={consoleLogEpoch}
+            pinConsoleJob={consoleJobPinned}
             binaryUpgrading={agent.binaryUpgradeInProgress}
             binaryUpgradeError={agent.binaryUpgradeLastError}
             agentVersion={agent.version}

@@ -6,12 +6,15 @@ import {
   onlineThresholdDate,
 } from "../lib/agent-presence.js";
 import {
+  envNumber,
+  envString,
   fleetAgentMtlsMode,
   fleetAutoEncrypt,
   fleetPublicHost,
   fleetRequireTls,
   fleetTlsMinVersionForAgents,
   fleetTlsPinAuto,
+  resolveTrustProxy,
 } from "../lib/env.js";
 import { fleetMtlsCaReady } from "../lib/fleet-mtls.js";
 import { controllerTlsPinInfo } from "../lib/fleet-tls-pin.js";
@@ -173,7 +176,7 @@ export async function fleetRoutes(app: AppInstance) {
     "/tls-setup",
     { preHandler: requireUser },
     async (req, reply) => {
-      const apiPort = Number(process.env.API_PORT ?? 4000);
+      const apiPort = envNumber("API_PORT", 4000);
       const publicUrl = securePublicBase(req, apiPort);
       const caUrl = fleetCaDownloadUrl(req, apiPort);
       return {
@@ -187,10 +190,10 @@ export async function fleetRoutes(app: AppInstance) {
           "",
         ).replace(/:\d+$/, ""),
         tlsProxy: fleetTlsProxy(),
-        sslCertPath: process.env.FLEET_SSL_CERT?.trim() || "/etc/fleet/ssl/fullchain.pem",
-        sslKeyPath: process.env.FLEET_SSL_KEY?.trim() || "/etc/fleet/ssl/privkey.pem",
+        sslCertPath: envString("FLEET_SSL_CERT", "/etc/fleet/ssl/fullchain.pem"),
+        sslKeyPath: envString("FLEET_SSL_KEY", "/etc/fleet/ssl/privkey.pem"),
         issuer: "Fleet TLS (nginx ssl_certificate)",
-        trustProxy: process.env.TRUST_PROXY === "1",
+        trustProxy: resolveTrustProxy(),
         agentMtls: fleetAgentMtlsMode(),
         agentMtlsCaReady: fleetMtlsCaReady(),
         tlsPinUrl: caUrl
@@ -223,7 +226,7 @@ export async function fleetRoutes(app: AppInstance) {
         return reply.code(400).send({ error: "invalid_body" });
       }
 
-      const apiPort = Number(process.env.API_PORT ?? 4000);
+      const apiPort = envNumber("API_PORT", 4000);
       const publicUrl = securePublicBase(req, apiPort);
 
       if (!parsed.data.queueJobs) {

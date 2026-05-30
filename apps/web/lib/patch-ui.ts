@@ -42,18 +42,22 @@ export function managerLabel(manager: string): string {
 
 export function pickActivePatchPlan<T extends PatchPlanLike>(plans: T[]): T | null {
   if (!plans.length) return null;
-  return (
-    plans.find(
-      (pl) => pl.status === "READY" && planPackageCount(pl.packages) > 0,
-    ) ??
-    plans.find((pl) => pl.status === "APPROVED") ??
-    plans.find((pl) => pl.status === "PENDING_DRY_RUN") ??
-    plans.find((pl) => pl.status === "FAILED") ??
-    plans.find((pl) => pl.status === "REJECTED") ??
-    plans.find((pl) => pl.status === "NO_UPDATES") ??
-    plans.find((pl) => pl.status === "EXECUTED") ??
-    plans[0]
+  const sorted = [...plans].sort(
+    (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt),
   );
+
+  const inFlight = sorted.find(
+    (pl) => pl.status === "APPROVED" || pl.status === "PENDING_DRY_RUN",
+  );
+  if (inFlight) return inFlight;
+
+  const ready = sorted.find(
+    (pl) => pl.status === "READY" && planPackageCount(pl.packages) > 0,
+  );
+  if (ready) return ready;
+
+  // Prefer the latest check outcome (NO_UPDATES, EXECUTED, FAILED, …), not a stale FAILED plan.
+  return sorted[0] ?? null;
 }
 
 export function planPackageCount(packages: PatchPlanPackage[] | undefined): number {
@@ -99,7 +103,26 @@ export function planStatusTone(status: string): string {
   }
 }
 
-type LiveJobRow = { id: string; type: string; status: string };
+type LiveJobRow = { id: string; type: string; status: string; createdAt?: string };
+
+/** Job id for activity console: plan fields first, then nearest PACKAGE_PATCH_PLAN job. */
+export function resolvePlanJobId(
+  plan: PatchPlanLike,
+  jobs: LiveJobRow[] = [],
+): string | null {
+  const linked = plan.executeJobId ?? plan.dryRunJobId;
+  if (linked) return linked;
+  const patchJobs = jobs.filter((j) => j.type === "PACKAGE_PATCH_PLAN");
+  if (!patchJobs.length) return null;
+  const planTs = Date.parse(plan.createdAt);
+  if (!Number.isFinite(planTs)) return patchJobs[0]?.id ?? null;
+  const near = patchJobs.find((j) => {
+    if (!j.createdAt) return false;
+    const jts = Date.parse(j.createdAt);
+    return jts >= planTs - 60_000 && jts <= planTs + 600_000;
+  });
+  return near?.id ?? patchJobs[0]?.id ?? null;
+}
 
 /** Prefer the job that is actively running (kernel maintenance, patch check, or install). */
 export function liveJobIdForPlan(

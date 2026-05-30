@@ -29,6 +29,8 @@ export function AgentActivityConsole({
   jobs,
   selectedJobId,
   onSelectJobId,
+  consoleLogEpoch = 0,
+  pinConsoleJob = false,
   binaryUpgrading,
   binaryUpgradeError,
   agentVersion,
@@ -39,7 +41,11 @@ export function AgentActivityConsole({
   activePlan: PatchPlanLike | null;
   jobs: JobRow[];
   selectedJobId: string | null;
-  onSelectJobId: (jobId: string | null) => void;
+  onSelectJobId: (jobId: string | null, opts?: { pin?: boolean }) => void;
+  /** Bump to force JobLogStream reconnect (e.g. Recent activity → Open). */
+  consoleLogEpoch?: number;
+  /** When true, keep showing selectedJobId instead of auto-switching to a new run. */
+  pinConsoleJob?: boolean;
   binaryUpgrading?: boolean;
   binaryUpgradeError?: string | null;
   agentVersion?: string | null;
@@ -47,7 +53,8 @@ export function AgentActivityConsole({
 }) {
   const step = patchWorkflowStep(activePlan, patchPlans);
   const autoJobId = liveJobIdForPlan(activePlan, patchPlans, jobs);
-  const streamJobId = selectedJobId ?? autoJobId;
+  const streamJobId =
+    pinConsoleJob && selectedJobId ? selectedJobId : (selectedJobId ?? autoJobId);
 
   const jobOptions = useMemo(() => {
     const fromPlans = patchPlans.flatMap((pl) =>
@@ -58,7 +65,10 @@ export function AgentActivityConsole({
   }, [patchPlans, jobs]);
 
   return (
-    <section className="space-y-2 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3">
+    <section
+      id="fleet-activity-console"
+      className="space-y-2 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3 scroll-mt-4"
+    >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <div className="text-xs font-semibold uppercase tracking-wide text-white/45">
@@ -75,7 +85,9 @@ export function AgentActivityConsole({
             <select
               value={streamJobId ?? ""}
               onChange={(e) =>
-                onSelectJobId(e.target.value ? e.target.value : null)
+                onSelectJobId(e.target.value ? e.target.value : null, {
+                  pin: !!e.target.value,
+                })
               }
               className="mt-1 block rounded-md border border-white/15 bg-black/40 px-2 py-1 text-xs text-white"
             >
@@ -114,6 +126,7 @@ export function AgentActivityConsole({
       )}
 
       <JobLogStream
+        key={`${streamJobId ?? "none"}-${consoleLogEpoch}`}
         jobId={streamJobId}
         maxHeight={compact ? "14rem" : "22rem"}
         emptyMessage={

@@ -19,6 +19,7 @@ export function JobLogStream({
   const [connected, setConnected] = useState(false);
   const alive = useRef(true);
   const seenSeq = useRef(new Set<number>());
+  const seenText = useRef(new Set<string>());
   const preRef = useRef<HTMLPreElement>(null);
   const stick = useRef(true);
 
@@ -37,6 +38,7 @@ export function JobLogStream({
     }
     setLines([]);
     seenSeq.current.clear();
+    seenText.current.clear();
     setConnected(false);
     const ac = new AbortController();
     const token = getToken();
@@ -81,6 +83,8 @@ export function JobLogStream({
               payload.seq !== undefined
                 ? `[${payload.seq}] ${payload.message ?? ""}`
                 : (payload.message ?? line);
+            if (seenText.current.has(text)) continue;
+            seenText.current.add(text);
             setLines((prev) => [...prev, text]);
           } catch {
             setLines((prev) => [...prev, line]);

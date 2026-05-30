@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func maintainWebSocket(base, token string, cli *http.Client) {
@@ -31,6 +33,20 @@ func maintainWebSocket(base, token string, cli *http.Client) {
 
 		log.Printf("websocket connected (%s)", u.Host)
 
+		pingDone := make(chan struct{})
+		go func() {
+			t := time.NewTicker(25 * time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-pingDone:
+					return
+				case <-t.C:
+					_ = conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
+				}
+			}
+		}()
+
 		for {
 			conn.SetReadDeadline(time.Now().Add(120 * time.Second))
 			_, msg, err := conn.ReadMessage()
@@ -41,6 +57,7 @@ func maintainWebSocket(base, token string, cli *http.Client) {
 			log.Printf("websocket: %s", string(msg))
 			handleWebSocketMessage(cli, base, token, msg)
 		}
+		close(pingDone)
 		_ = conn.Close()
 		time.Sleep(2 * time.Second)
 	}

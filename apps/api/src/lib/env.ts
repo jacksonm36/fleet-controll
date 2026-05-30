@@ -97,3 +97,15 @@ export function cspReportOnlyEnabled(): boolean {
   const raw = process.env.CSP_REPORT_ONLY?.trim().toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes";
 }
+
+export function envNumber(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+export function envString(name: string, fallback: string): string {
+  const raw = process.env[name]?.trim();
+  return raw || fallback;
+}

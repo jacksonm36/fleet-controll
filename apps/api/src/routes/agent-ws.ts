@@ -1,5 +1,15 @@
 import type { AppInstance } from "../types/app-instance.js";
-import type { WebSocket } from "ws";
+
+/** Minimal WebSocket surface used by @fastify/websocket (avoids hard dependency on @types/ws in the IDE). */
+type AgentWebSocket = {
+  readonly OPEN: number;
+  readonly CONNECTING: number;
+  readyState: number;
+  send(data: string): void;
+  ping(): void;
+  close(code?: number, reason?: string): void;
+  on(event: "close", listener: () => void): void;
+};
 import { isProduction } from "../lib/env.js";
 import { resolveAgentCredential } from "../middleware/agent-auth.js";
 import {
@@ -31,7 +41,7 @@ function tokenFromRequest(
 }
 
 /** @fastify/websocket v11 passes WebSocket directly; older versions use { socket }. */
-function wsSocket(conn: { socket?: WebSocket } | WebSocket): WebSocket {
+function wsSocket(conn: { socket?: AgentWebSocket } | AgentWebSocket): AgentWebSocket {
   if (
     conn &&
     typeof conn === "object" &&
@@ -40,10 +50,10 @@ function wsSocket(conn: { socket?: WebSocket } | WebSocket): WebSocket {
   ) {
     return conn.socket;
   }
-  return conn as WebSocket;
+  return conn as AgentWebSocket;
 }
 
-function safeClose(sock: WebSocket, code: number, reason: string) {
+function safeClose(sock: AgentWebSocket, code: number, reason: string) {
   try {
     if (sock.readyState === sock.OPEN || sock.readyState === sock.CONNECTING) {
       sock.close(code, reason);
@@ -87,7 +97,17 @@ export async function agentWsRoutes(app: AppInstance) {
           };
           registerAgentSocket(agentId, bridge);
 
+          const pingIv = setInterval(() => {
+            if (sock.readyState !== sock.OPEN) return;
+            try {
+              sock.ping();
+            } catch {
+              clearInterval(pingIv);
+            }
+          }, 25_000);
+
           sock.on("close", () => {
+            clearInterval(pingIv);
             unregisterAgentSocket(agentId, bridge);
           });
 

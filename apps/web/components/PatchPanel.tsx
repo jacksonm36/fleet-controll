@@ -138,6 +138,9 @@ export function PatchPanel({
   jobs,
   consoleJobId,
   onConsoleJobId,
+  onOpenPlan,
+  consoleLogEpoch,
+  pinConsoleJob,
   binaryUpgrading,
   binaryUpgradeError,
   agentVersion,
@@ -167,7 +170,10 @@ export function PatchPanel({
   onClearSelection: () => void;
   jobs: Array<{ id: string; type: string; status: string; createdAt: string }>;
   consoleJobId: string | null;
-  onConsoleJobId: (jobId: string | null) => void;
+  onConsoleJobId: (jobId: string | null, opts?: { pin?: boolean }) => void;
+  onOpenPlan: (plan: PatchPlanLike) => void;
+  consoleLogEpoch?: number;
+  pinConsoleJob?: boolean;
   binaryUpgrading?: boolean;
   binaryUpgradeError?: string | null;
   agentVersion?: string | null;
@@ -290,6 +296,8 @@ export function PatchPanel({
           jobs={jobs}
           selectedJobId={consoleJobId}
           onSelectJobId={onConsoleJobId}
+          consoleLogEpoch={consoleLogEpoch}
+          pinConsoleJob={pinConsoleJob}
           binaryUpgrading={binaryUpgrading}
           binaryUpgradeError={binaryUpgradeError}
           agentVersion={agentVersion}
@@ -601,11 +609,7 @@ export function PatchPanel({
                     <button
                       type="button"
                       className="text-xs text-[hsl(var(--accent))] hover:underline"
-                      onClick={() => {
-                        onSelectPlan(pl);
-                        const jid = pl.executeJobId ?? pl.dryRunJobId;
-                        if (jid) onConsoleJobId(jid);
-                      }}
+                      onClick={() => onOpenPlan(pl)}
                     >
                       Open
                     </button>

@@ -587,7 +587,7 @@ func runPackageUpgrade(payload json.RawMessage, sudo bool, logFn func(string)) (
 }
 
 func upgradeApt(sudo bool, opts patchUpgradeOpts, logFn func(string)) (int, error) {
-	if err := streamCommand(logFn, sudo, "apt-get", []string{"update"}); err != nil {
+	if err := streamCommand(logFn, sudo, "apt-get", aptGetArgs("update")); err != nil {
 		return 0, err
 	}
 	if len(opts.packageNames) > 0 {
@@ -617,14 +617,14 @@ func upgradeApt(sudo bool, opts patchUpgradeOpts, logFn func(string)) (int, erro
 			return parseAptChangeSummaryCount(out), nil
 		}
 		logFn("unattended-upgrade not found; using apt-get upgrade (security filtering best-effort)")
-		out, err := streamCommandCapture(logFn, sudo, "apt-get", []string{"upgrade", "-y"})
+		out, err := streamCommandCapture(logFn, sudo, "apt-get", aptGetArgs("upgrade", "-y"))
 		if err != nil {
 			return 0, err
 		}
 		return parseAptChangeSummaryCount(out), nil
 	}
 	if opts.all || len(opts.packageNames) == 0 {
-		out, err := streamCommandCapture(logFn, sudo, "apt-get", []string{"upgrade", "-y"})
+		out, err := streamCommandCapture(logFn, sudo, "apt-get", aptGetArgs("upgrade", "-y"))
 		if err != nil {
 			return 0, err
 		}
@@ -819,8 +819,21 @@ func reconcileAptPinVersions(
 	return out
 }
 
+// aptNonInteractiveOpts keeps apt/dpkg from blocking on conffile prompts (no TTY on agents).
+// force-confold keeps operator-edited configs (e.g. crowdsec-nginx-bouncer.conf).
+func aptNonInteractiveOpts() []string {
+	return []string{
+		"-o", "Dpkg::Options::=--force-confold",
+		"-o", "Dpkg::Options::=--force-confdef",
+	}
+}
+
+func aptGetArgs(parts ...string) []string {
+	return append(aptNonInteractiveOpts(), parts...)
+}
+
 func aptInstallArgs(names []string, pins map[string]string, usePins bool) []string {
-	args := []string{"install", "-y"}
+	args := aptGetArgs("install", "-y")
 	for _, name := range names {
 		if usePins {
 			if v := pins[name]; v != "" {
@@ -903,20 +916,12 @@ func hostRebootRequired() bool {
 }
 
 func runQuiet(sudo bool, name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	if sudo && runtime.GOOS == "linux" && os.Geteuid() != 0 {
-		cmd = exec.Command("sudo", append([]string{"-n", name}, args...)...)
-	}
-	return cmd.Run()
+	return execCommand(sudo, name, args).Run()
 }
 
 func runOutput(sudo bool, name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
-	cmd.Env = append(os.Environ(), "LANG=C")
-	if sudo && runtime.GOOS == "linux" && os.Geteuid() != 0 {
-		cmd = exec.Command("sudo", append([]string{"-n", name}, args...)...)
-		cmd.Env = append(os.Environ(), "LANG=C")
-	}
+	cmd := execCommand(sudo, name, args)
+	cmd.Env = append(cmd.Env, "LANG=C")
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

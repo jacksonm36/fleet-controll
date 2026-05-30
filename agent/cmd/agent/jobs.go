@@ -63,6 +63,7 @@ func runJob(cli *http.Client, base, token string, job *jobRecord, sudo bool) {
 	}()
 
 	logFn(fmt.Sprintf("starting job type=%s", job.Type))
+	log.Printf("job %s type=%s started", job.ID, job.Type)
 
 	switch job.Type {
 	case "PACKAGE_REFRESH":
@@ -244,18 +245,27 @@ func runCrowdSecDecision(payload json.RawMessage, sudo bool, logFn func(string))
 func configureCommandEnv(cmd *exec.Cmd) {
 	cmd.Env = append(os.Environ(),
 		"DEBIAN_FRONTEND=noninteractive",
+		"DEBCONF_NONINTERACTIVE_SEEN=true",
 		"NEEDRESTART_MODE=a",
 		"APT_LISTCHANGES_FRONTEND=none",
 		"UCF_FORCE_CONFOLD=1",
 	)
 }
 
-func streamCommand(logFn func(string), sudo bool, name string, args []string) error {
-	cmd := exec.Command(name, args...)
+// execCommand runs a process with non-interactive Debian/apt env preserved through sudo -E.
+func execCommand(sudo bool, name string, args []string) *exec.Cmd {
+	var cmd *exec.Cmd
 	if sudo && runtime.GOOS == "linux" && os.Geteuid() != 0 {
-		cmd = exec.Command("sudo", append([]string{"-n", name}, args...)...)
+		cmd = exec.Command("sudo", append([]string{"-n", "-E", name}, args...)...)
+	} else {
+		cmd = exec.Command(name, args...)
 	}
 	configureCommandEnv(cmd)
+	return cmd
+}
+
+func streamCommand(logFn func(string), sudo bool, name string, args []string) error {
+	cmd := execCommand(sudo, name, args)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -308,11 +318,7 @@ func streamCommand(logFn func(string), sudo bool, name string, args []string) er
 }
 
 func streamCommandCapture(logFn func(string), sudo bool, name string, args []string) (string, error) {
-	cmd := exec.Command(name, args...)
-	if sudo && runtime.GOOS == "linux" && os.Geteuid() != 0 {
-		cmd = exec.Command("sudo", append([]string{"-n", name}, args...)...)
-	}
-	configureCommandEnv(cmd)
+	cmd := execCommand(sudo, name, args)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

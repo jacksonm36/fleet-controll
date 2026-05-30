@@ -21,6 +21,11 @@ export const JOB_OFFLINE_REQUEUE_MS = Number(
   process.env.JOB_OFFLINE_REQUEUE_MS ?? 90_000,
 );
 
+/** RUNNING with zero log lines — requeue so /commands can deliver the job again (default 90 s). */
+export const JOB_ZOMBIE_NO_LOG_MS = Number(
+  process.env.JOB_ZOMBIE_NO_LOG_MS ?? 90_000,
+);
+
 const JOB_MAX_REQUEUES = Number(process.env.JOB_MAX_REQUEUES ?? 2);
 
 function runningStaleMs(type: JobType): number {
@@ -39,7 +44,7 @@ function runningStaleMs(type: JobType): number {
 function noLogStaleMs(type: JobType): number {
   switch (type) {
     case "PACKAGE_PATCH_PLAN":
-      return Number(process.env.JOB_PATCH_PLAN_NO_LOG_MS ?? 600_000);
+      return Number(process.env.JOB_PATCH_PLAN_NO_LOG_MS ?? 180_000);
     case "PACKAGE_UPGRADE":
       return Number(process.env.JOB_UPGRADE_NO_LOG_MS ?? 900_000);
     default:
@@ -158,6 +163,36 @@ async function reconcileOneJob(
 
   await requeueJob(job, reason);
   return "requeued";
+}
+
+/**
+ * If a RUNNING job never produced logs (agent crashed or lost work), requeue it so
+ * the next /commands poll can run it again.
+ */
+export async function requeueZombieRunningJob(
+  agentId: string,
+): Promise<boolean> {
+  const job = await prisma.job.findFirst({
+    where: { agentId, status: "RUNNING" },
+    orderBy: { startedAt: "asc" },
+  });
+  if (!job) return false;
+
+  const logCount = await prisma.jobLogChunk.count({ where: { jobId: job.id } });
+  if (logCount > 0) return false;
+
+  const started = job.startedAt?.getTime() ?? job.createdAt.getTime();
+  if (Date.now() - started < JOB_ZOMBIE_NO_LOG_MS) return false;
+
+  if (requeueCount(job) >= JOB_MAX_REQUEUES) {
+    await failJob(
+      job,
+      "Job produced no output — failed after max requeues",
+    );
+    return true;
+  }
+  await requeueJob(job, "No log output — requeued for agent retry");
+  return true;
 }
 
 /** Requeue or fail stuck jobs for one agent. Returns counts. */

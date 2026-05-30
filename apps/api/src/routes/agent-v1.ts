@@ -1,5 +1,4 @@
-import { prisma } from "@fleet/db";
-import type { JobStatus } from "@prisma/client";
+import { prisma, type JobStatus, type Prisma } from "@fleet/db";
 import type { AppInstance } from "../types/app-instance.js";
 import { z } from "zod";
 import { invalidateFleetCaches } from "../lib/cache.js";
@@ -15,7 +14,10 @@ import {
   reconcileAllStaleBinaryUpgrades,
   reconcileBinaryUpgradeFlags,
 } from "../lib/binary-upgrade-reconcile.js";
-import { reconcileStaleJobsForAgent } from "../lib/job-reconcile.js";
+import {
+  reconcileStaleJobsForAgent,
+  requeueZombieRunningJob,
+} from "../lib/job-reconcile.js";
 import { persistAgentCves } from "../lib/cve-scan.js";
 import { emitJobLog } from "../lib/job-bus.js";
 import {
@@ -26,6 +28,7 @@ import {
   connectedIpFallbackUpdate,
   hostIpUpdateFromPayload,
 } from "../lib/client-ip.js";
+import { envNumber } from "../lib/env.js";
 import {
   appendBinaryDeployEvent,
   noteBinaryDeployFailure,
@@ -555,7 +558,7 @@ export async function agentV1Routes(app: AppInstance) {
       }
       const inv = parsed.data;
 
-      await prisma.$transaction(async (tx) => {
+      await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
         await tx.packageRecord.deleteMany({ where: { agentId } });
         await tx.serviceRecord.deleteMany({ where: { agentId } });
         await tx.containerRecord.deleteMany({ where: { agentId } });
@@ -811,6 +814,7 @@ export async function agentV1Routes(app: AppInstance) {
       });
 
       await reconcileStaleJobsForAgent(agentId);
+      await requeueZombieRunningJob(agentId);
 
       const blockingRunning = await prisma.job.findFirst({
         where: { agentId, status: "RUNNING" },
@@ -834,7 +838,7 @@ export async function agentV1Routes(app: AppInstance) {
           });
           return updated;
         }
-        const pollMs = Number(process.env.AGENT_JOB_POLL_MS ?? 600);
+        const pollMs = envNumber("AGENT_JOB_POLL_MS", 600);
         await new Promise((r) => setTimeout(r, pollMs));
       }
       await invalidateFleetCaches(agentId);
