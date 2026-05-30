@@ -8,8 +8,9 @@ import {
   verifyPassword,
   verifyToken,
 } from "@fleet/db";
-import type { Role } from "@prisma/client";
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { Prisma, Role } from "@prisma/client";
+import type { AppReply } from "../types/app-instance.js";
+import type { AppInstance } from "../types/app-instance.js";
 import { authenticator } from "otplib";
 import {
   generateAuthenticationOptions,
@@ -75,14 +76,18 @@ async function findUserByLogin(identifier: string) {
   return user;
 }
 
-async function audit(actorId: string | null, action: string, meta?: Record<string, unknown>) {
+async function audit(
+  actorId: string | null,
+  action: string,
+  meta?: Prisma.InputJsonValue,
+) {
   await prisma.auditEvent.create({
     data: { actorId, action, meta: meta ?? {} },
   });
 }
 
 async function issueSession(
-  reply: FastifyReply,
+  reply: AppReply,
   user: { id: string; role: Role },
 ) {
   const token = await reply.jwtSign(
@@ -94,7 +99,7 @@ async function issueSession(
 }
 
 async function issueMfaPending(
-  reply: FastifyReply,
+  reply: AppReply,
   user: { id: string; role: Role },
 ) {
   return reply.jwtSign(
@@ -120,7 +125,7 @@ async function generateRecoveryCodes(userId: string): Promise<string[]> {
   return codes;
 }
 
-export async function authRoutes(app: FastifyInstance) {
+export async function authRoutes(app: AppInstance) {
   app.post("/login", async (req, reply) => {
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) {

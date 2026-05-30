@@ -64,6 +64,10 @@ export function buildFixAgentConnectionCommand(): string {
   return `curl -fsSL '${httpFixAgentConnectionUrl()}' | bash`;
 }
 
+export function buildFixAgentConnectionHttpsCommand(): string {
+  return `curl -kfsSL '${httpsFixAgentConnectionUrl()}' | bash`;
+}
+
 /** Alternative when port 4000 is blocked; same bootstrap via web proxy. */
 export function buildAgentInstallViaWebProxy(token: string): string {
   const t = shellEscapeToken(token);

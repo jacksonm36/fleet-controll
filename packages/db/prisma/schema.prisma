@@ -152,7 +152,7 @@ model EnrollmentToken {
 model Agent {
   id           String       @id @default(cuid())
   enrolledAt   DateTime     @default(now())
-  hostname     String
+  hostname     String       @unique
   osType       String
   osDetail     String?
   labels       Json?

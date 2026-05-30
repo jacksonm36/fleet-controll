@@ -9,7 +9,10 @@ export function usePolling(
   runImmediately = true,
 ) {
   const fnRef = useRef(fn);
-  fnRef.current = fn;
+
+  useEffect(() => {
+    fnRef.current = fn;
+  }, [fn]);
 
   useEffect(() => {
     let cancelled = false;

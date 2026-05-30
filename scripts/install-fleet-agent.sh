@@ -48,6 +48,8 @@ FLEET_AGENT_SOURCE_URL="${FLEET_AGENT_SOURCE_URL:-}"
 # Prebuilt Go binary from controller (preferred — no golang on target required)
 FLEET_AGENT_BINARY_URL="${FLEET_AGENT_BINARY_URL:-}"
 FLEET_CA_DOWNLOAD_URL="${FLEET_CA_DOWNLOAD_URL:-}"
+FLEET_TLS_PIN_AUTO="${FLEET_TLS_PIN_AUTO:-1}"
+FLEET_TLS_MIN_VERSION="${FLEET_TLS_MIN_VERSION:-}"
 FLEET_INSTALLER_BUILD="${FLEET_INSTALLER_BUILD:-}"
 
 # __FLEET_TLS_HELPER_EMBED__
@@ -337,7 +339,11 @@ enroll_agent() {
 	if ! bash "$enroll_sh" "$FLEET_ENROLL_TOKEN"; then
 		echo "" >&2
 		echo "Enrollment failed." >&2
-		echo "  • HTTP 400 / invalid_or_expired_token: mint a NEW token in Fleet → Enrollment (single-use)." >&2
+		echo "  • HTTP 409: this VM may already be in Fleet — use FLEET_HOSTNAME=<Agents table name> with a fresh token," >&2
+		echo "      or delete the stale row and enroll again (token is not burned on 409)." >&2
+		echo "  • HTTP 400 invalid_body: hostname invalid or os-release too large — retry after controller update, or:" >&2
+		echo "      HOSTNAME_OVERRIDE=mail-host FLEET_ENROLL_TOKEN='…' bash  (fresh token)" >&2
+		echo "  • HTTP 400 invalid_or_expired_token: mint a NEW token in Fleet → Enrollment (single-use)." >&2
 		echo "  • Copy the secret exactly — no quotes, spaces, or placeholder text." >&2
 		echo "  • HTTP 403 tls_required: use HTTP bootstrap (no -k on first curl):" >&2
 		echo "      curl -fsSL 'https://${FLEET_DISCOVER_HOST:-YOUR_CONTROLLER}/api/public/agent-install-k.sh' | FLEET_ENROLL_TOKEN='…' bash" >&2
@@ -414,6 +420,9 @@ main() {
 	echo "  Token:   $HOME/.fleet-agent.token"
 	if [[ -n "${FLEET_CA_FILE:-}" && -f "${FLEET_CA_FILE}" ]]; then
 		echo "  CA:      $FLEET_CA_FILE"
+	fi
+	if [[ -n "${FLEET_TLS_PIN:-}" ]]; then
+		echo "  TLS pin: SHA-512 SPKI (FLEET_TLS_PIN)"
 	fi
 	if [[ "$(id -u)" -eq 0 ]]; then
 		echo "  Service: systemctl status fleet-agent"

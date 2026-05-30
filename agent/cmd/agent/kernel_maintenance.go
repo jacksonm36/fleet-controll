@@ -14,8 +14,10 @@ type kernelMaintenanceResult struct {
 	InstalledPackages []string `json:"installedPackages"`
 	InstalledCount    int      `json:"installedCount"`
 	RunningKernel     string   `json:"runningKernel"`
+	LatestInstalled   string   `json:"latestInstalled,omitempty"`
 	Rebooted          bool     `json:"rebooted"`
 	RebootScheduled   bool     `json:"rebootScheduled"`
+	RebootOnly        bool     `json:"rebootOnly"`
 }
 
 func isKernelRelatedPackage(name string) bool {
@@ -27,15 +29,24 @@ func isKernelRelatedPackage(name string) bool {
 		strings.HasPrefix(n, "linux-base")
 }
 
-func collectKernelAptUpgradable(sudo bool) ([]patchPlanEntry, error) {
+func debianArch(sudo bool) string {
+	out, err := runOutput(sudo, "dpkg", "--print-architecture")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+func collectKernelAptUpgradable(sudo bool, logFn func(string)) ([]patchPlanEntry, error) {
 	if _, err := exec.LookPath("apt-get"); err != nil {
 		return nil, fmt.Errorf("apt-get not found")
 	}
 	if err := runQuiet(sudo, "apt-get", "update", "-qq"); err != nil {
-		return nil, fmt.Errorf("apt-get update: %w", err)
+		if logFn != nil {
+			logFn(fmt.Sprintf("warning: apt-get update: %v (continuing)", err))
+		}
 	}
-	args := []string{"list", "--upgradable"}
-	out, err := runOutput(sudo, "apt-get", args...)
+	out, err := runOutput(sudo, "apt-get", "list", "--upgradable")
 	if err != nil {
 		return nil, err
 	}
@@ -69,16 +80,64 @@ func collectKernelAptUpgradable(sudo bool) ([]patchPlanEntry, error) {
 	return plan, nil
 }
 
-func kernelRebootNeeded(sudo bool) bool {
+func kernelNeedsReboot(sudo bool) bool {
 	if hostRebootRequired() {
 		return true
 	}
-	running := kernelRelease()
-	latest := newestInstalledKernelImage(sudo)
-	if running == "" || latest == "" {
-		return false
+	_, pending := linuxKernelUpdateState(sudo)
+	return pending
+}
+
+func defaultKernelMetapackages(sudo bool) []string {
+	arch := debianArch(sudo)
+	if arch == "" {
+		return nil
 	}
-	return latest != running && !strings.HasPrefix(running, latest)
+	return []string{
+		"linux-image-" + arch,
+		"linux-headers-" + arch,
+	}
+}
+
+func installKernelPackages(sudo bool, names []string, logFn func(string)) error {
+	if len(names) == 0 {
+		return nil
+	}
+	logFn(fmt.Sprintf("Installing %d kernel-related package(s)…", len(names)))
+	for _, name := range names {
+		logFn(fmt.Sprintf("  → %s", name))
+	}
+	args := append([]string{"install", "-y"}, names...)
+	out, err := runOutput(sudo, "apt-get", args...)
+	if out != "" {
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			if strings.TrimSpace(line) != "" {
+				logFn(line)
+			}
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("apt-get install kernel packages: %w", err)
+	}
+	return nil
+}
+
+func parseKernelMaintenancePayload(payload json.RawMessage) (rebootOnly bool, delaySec int) {
+	delaySec = 5
+	if len(payload) == 0 {
+		return false, delaySec
+	}
+	var p map[string]any
+	if json.Unmarshal(payload, &p) != nil {
+		return false, delaySec
+	}
+	if v, ok := p["rebootOnly"].(bool); ok {
+		rebootOnly = v
+	}
+	if v, ok := p["rebootDelaySec"].(float64); ok && v >= 0 {
+		delaySec = int(v)
+	}
+	return rebootOnly, delaySec
 }
 
 func runHostKernelMaintenance(payload json.RawMessage, sudo bool, logFn func(string)) (kernelMaintenanceResult, error) {
@@ -86,55 +145,58 @@ func runHostKernelMaintenance(payload json.RawMessage, sudo bool, logFn func(str
 		return kernelMaintenanceResult{}, fmt.Errorf("kernel maintenance only supported on linux")
 	}
 	res := kernelMaintenanceResult{RunningKernel: kernelRelease()}
+	latest, _ := linuxKernelUpdateState(sudo)
+	res.LatestInstalled = latest
 
-	plan, err := collectKernelAptUpgradable(sudo)
-	if err != nil {
-		return res, err
-	}
+	rebootOnly, delaySec := parseKernelMaintenancePayload(payload)
+	needsReboot := kernelNeedsReboot(sudo)
 
-	if len(plan) > 0 {
-		logFn(fmt.Sprintf("Installing %d kernel-related package(s)…", len(plan)))
-		names := make([]string, 0, len(plan))
+	var names []string
+	if !rebootOnly {
+		plan, err := collectKernelAptUpgradable(sudo, logFn)
+		if err != nil {
+			return res, err
+		}
+		names = make([]string, 0, len(plan))
 		for _, p := range plan {
 			names = append(names, p.Name)
-			logFn(fmt.Sprintf("  %s %s -> %s", p.Name, p.CurrentVersion, p.TargetVersion))
 		}
-		args := append([]string{"install", "-y"}, names...)
-		out, err := runOutput(sudo, "apt-get", args...)
-		if out != "" {
-			for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-				if strings.TrimSpace(line) != "" {
-					logFn(line)
-				}
+		if len(names) == 0 && aptKernelUpgradesPending(sudo) {
+			meta := defaultKernelMetapackages(sudo)
+			if len(meta) > 0 {
+				logFn("Kernel updates listed by apt but no package lines parsed — trying image metapackages")
+				names = meta
 			}
 		}
-		if err != nil {
-			return res, fmt.Errorf("apt-get install kernel packages: %w", err)
+		if len(names) > 0 {
+			if err := installKernelPackages(sudo, names, logFn); err != nil {
+				return res, err
+			}
+			res.InstalledPackages = names
+			res.InstalledCount = len(names)
+		} else {
+			logFn("No kernel packages to install via apt")
 		}
-		res.InstalledPackages = names
-		res.InstalledCount = len(names)
 	} else {
-		logFn("No kernel packages pending via apt — checking if reboot is required for an installed kernel…")
+		logFn("Reboot-only: skipping apt kernel package install")
+		res.RebootOnly = true
 	}
 
-	if !kernelRebootNeeded(sudo) && len(plan) == 0 {
+	if !needsReboot && len(names) == 0 && !rebootOnly {
 		return res, fmt.Errorf("no kernel upgrades pending and reboot not required")
 	}
-
-	logFn("WARNING: rebooting host now to activate the new kernel")
-	logFn(fmt.Sprintf("Running kernel before reboot: %s", res.RunningKernel))
-
-	delaySec := 5
-	if len(payload) > 0 {
-		var p map[string]any
-		if json.Unmarshal(payload, &p) == nil {
-			if v, ok := p["rebootDelaySec"].(float64); ok && v >= 0 {
-				delaySec = int(v)
-			}
-		}
+	if len(names) == 0 && (needsReboot || rebootOnly) {
+		res.RebootOnly = true
+		logFn("A newer kernel is already installed — reboot required to activate it")
 	}
 
-	if err := scheduleHostReboot(sudo, delaySec, logFn); err != nil {
+	logFn("WARNING: rebooting host now to activate the kernel")
+	logFn(fmt.Sprintf("Running kernel before reboot: %s", res.RunningKernel))
+	if res.LatestInstalled != "" {
+		logFn(fmt.Sprintf("Latest installed kernel image version: %s", res.LatestInstalled))
+	}
+
+	if err := scheduleHostRebootAsync(sudo, delaySec, logFn); err != nil {
 		return res, err
 	}
 	res.RebootScheduled = true
@@ -142,26 +204,22 @@ func runHostKernelMaintenance(payload json.RawMessage, sudo bool, logFn func(str
 	return res, nil
 }
 
-func scheduleHostReboot(sudo bool, delaySec int, logFn func(string)) error {
+func scheduleHostRebootAsync(sudo bool, delaySec int, logFn func(string)) error {
 	if delaySec < 1 {
 		delaySec = 1
 	}
-	logFn(fmt.Sprintf("Scheduling reboot in %d second(s)…", delaySec))
-	time.Sleep(time.Duration(delaySec) * time.Second)
-
-	if _, err := exec.LookPath("systemctl"); err == nil {
-		if err := runQuiet(sudo, "systemctl", "reboot"); err == nil {
-			logFn("systemctl reboot issued")
-			return nil
+	logFn(fmt.Sprintf("Scheduling reboot in %d second(s) (job will complete before reboot)…", delaySec))
+	go func() {
+		time.Sleep(time.Duration(delaySec) * time.Second)
+		if _, err := exec.LookPath("systemctl"); err == nil {
+			if err := runQuiet(sudo, "systemctl", "reboot"); err == nil {
+				return
+			}
 		}
-	}
-	if err := runQuiet(sudo, "shutdown", "-r", "now", "Fleet kernel maintenance reboot"); err == nil {
-		logFn("shutdown -r now issued")
-		return nil
-	}
-	// Last resort for agent running as root without systemctl
-	if os.Geteuid() == 0 {
-		return exec.Command("reboot").Start()
-	}
-	return fmt.Errorf("could not trigger reboot (systemctl/shutdown failed)")
+		_ = runQuiet(sudo, "shutdown", "-r", "now", "Fleet kernel maintenance reboot")
+		if os.Geteuid() == 0 {
+			_ = exec.Command("reboot").Start()
+		}
+	}()
+	return nil
 }

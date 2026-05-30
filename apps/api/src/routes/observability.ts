@@ -1,5 +1,6 @@
 import { prisma } from "@fleet/db";
-import type { FastifyInstance } from "fastify";
+import type { Prisma } from "@prisma/client";
+import type { AppInstance } from "../types/app-instance.js";
 import {
   grafanaAgentDashboardUrl,
   grafanaPublicUrl,
@@ -18,6 +19,7 @@ import {
   queryLokiRange,
 } from "../lib/loki.js";
 import { isAgentOnline, isMetricsStale } from "../lib/agent-presence.js";
+import { filterServicesNeedingAttention } from "../lib/service-health.js";
 import { requireUser } from "../middleware/auth.js";
 
 const historyRanges = new Set<MetricHistoryRange>(["1h", "6h", "24h"]);
@@ -27,7 +29,9 @@ const agentMetricsSelect = {
   id: true,
   hostname: true,
   osType: true,
+  osDetail: true,
   status: true,
+  primaryIp: true,
   lastSeenAt: true,
   lastMetricsAt: true,
   cpuPercent: true,
@@ -45,7 +49,6 @@ const agentMetricsSelect = {
 } as const;
 
 const agentContextSelect = {
-  osDetail: true,
   version: true,
   enrolledAt: true,
   labels: true,
@@ -59,9 +62,9 @@ const agentContextSelect = {
   ...agentMetricsSelect,
 } as const;
 
-function mapAgentMetrics(
-  agents: Awaited<ReturnType<typeof prisma.agent.findMany>>,
-) {
+type AgentMetricsRow = Prisma.AgentGetPayload<{ select: typeof agentMetricsSelect }>;
+
+function mapAgentMetrics(agents: AgentMetricsRow[]) {
   const now = Date.now();
   return agents.map((a) => ({
     ...a,
@@ -78,7 +81,7 @@ function observabilityConfig() {
     lokiConfigured: lokiConfigured(),
     grafanaUrl: grafanaPublicUrl(),
     lokiUrl: process.env.LOKI_URL?.trim() || "http://127.0.0.1:3100",
-    metricsIntervalSec: 20,
+    metricsIntervalSec: Number(process.env.FLEET_METRICS_INTERVAL_SEC ?? 5),
   };
 }
 
@@ -101,7 +104,7 @@ async function loadAgentContext(agentId: string) {
   });
   if (!agent) return null;
 
-  const [recentJobs, recentPatchRuns, topCves, failedServices, runningContainers] =
+  const [recentJobs, recentPatchRuns, topCves, serviceRows, runningContainers] =
     await Promise.all([
       prisma.job.findMany({
         where: { agentId },
@@ -142,10 +145,9 @@ async function loadAgentContext(agentId: string) {
         },
       }),
       prisma.serviceRecord.findMany({
-        where: { agentId, state: { not: "running" } },
+        where: { agentId },
         orderBy: { name: "asc" },
-        take: 8,
-        select: { name: true, kind: true, state: true, enabled: true },
+        select: { name: true, kind: true, state: true, enabled: true, detail: true },
       }),
       prisma.containerRecord.findMany({
         where: { agentId },
@@ -188,12 +190,12 @@ async function loadAgentContext(agentId: string) {
       finishedAt: r.finishedAt?.toISOString() ?? null,
     })),
     topCves,
-    failedServices,
+    failedServices: filterServicesNeedingAttention(serviceRows).slice(0, 12),
     runningContainers,
   };
 }
 
-export async function observabilityRoutes(app: FastifyInstance) {
+export async function observabilityRoutes(app: AppInstance) {
   app.get(
     "/config",
     { preHandler: requireUser },
@@ -251,6 +253,7 @@ export async function observabilityRoutes(app: FastifyInstance) {
         hostname: ctx.agent.hostname,
         osType: ctx.agent.osType,
         status: ctx.agent.status,
+        primaryIp: ctx.agent.primaryIp,
         online: ctx.agent.online,
         metricsStale: ctx.agent.metricsStale,
         lastSeenAt: ctx.agent.lastSeenAt,

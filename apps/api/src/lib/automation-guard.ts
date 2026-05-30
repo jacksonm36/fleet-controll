@@ -1,9 +1,9 @@
-import type { FastifyReply } from "fastify";
+import type { AppReply } from "../types/app-instance.js";
 import { shellAutomationDisabled } from "./security-config.js";
 
 export function rejectShellAutomationIfDisabled(
   jobType: string,
-  reply: FastifyReply,
+  reply: AppReply,
 ): boolean {
   if (jobType !== "SHELL_SCRIPT") return false;
   if (!shellAutomationDisabled()) return false;

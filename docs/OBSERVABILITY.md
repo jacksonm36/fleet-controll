@@ -85,7 +85,7 @@ Promtail runs as a native service and reads the host journal (`/run/log/journal`
 ## Architecture
 
 ```
-Agent (30s) ──HTTPS──► Fleet API ──► PostgreSQL (latest snapshot)
+Agent (5s default) ──HTTPS──► Fleet API ──► PostgreSQL (latest snapshot)
                               └──► InfluxDB ──► Grafana (native)
 systemd journal ──► Promtail ──► Loki ──► Grafana (native)
 

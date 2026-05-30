@@ -5,6 +5,7 @@ import {
   buildAgentBinaryUpgradeHttpsCommand,
   buildAgentReinstallCommand,
   buildFixAgentConnectionCommand,
+  buildFixAgentConnectionHttpsCommand,
 } from "@/lib/enrollment-install";
 
 function CopyLine({ label, command }: { label: string; command: string }) {
@@ -46,6 +47,9 @@ export function AgentBinaryDeploySection({
   pushing,
   onPush,
   onOpenConsole,
+  onRolloutTls,
+  rollingTls,
+  rolloutTlsMsg,
 }: {
   release: ReleaseInfo | null;
   outdatedCount: number;
@@ -53,6 +57,9 @@ export function AgentBinaryDeploySection({
   pushing: boolean;
   onPush: () => void;
   onOpenConsole: () => void;
+  onRolloutTls?: () => void;
+  rollingTls?: boolean;
+  rolloutTlsMsg?: string | null;
 }) {
   const [showHostCmds, setShowHostCmds] = useState(false);
 
@@ -107,10 +114,25 @@ export function AgentBinaryDeploySection({
             >
               {pushing ? "Pushing…" : "Push update to online agents"}
             </button>
+            {onRolloutTls ? (
+              <button
+                type="button"
+                disabled={rollingTls}
+                className="rounded-md border border-violet-500/40 bg-violet-500/15 px-3 py-2 text-xs font-medium text-violet-100 hover:bg-violet-500/25 disabled:opacity-50"
+                onClick={onRolloutTls}
+              >
+                {rollingTls ? "Rolling out TLS…" : "Roll out TLS config"}
+              </button>
+            ) : null}
           </div>
           <code className="max-w-md text-right text-[10px] text-white/40">
-            Controller: bash scripts/rebuild-fleet-agent.sh
+            Controller: bash scripts/rollout-fleet-agent-tls.sh
           </code>
+          {rolloutTlsMsg ? (
+            <p className="max-w-md text-right text-[10px] text-white/60">
+              {rolloutTlsMsg}
+            </p>
+          ) : null}
         </div>
       </div>
 
@@ -132,7 +154,11 @@ export function AgentBinaryDeploySection({
             command={buildAgentReinstallCommand()}
           />
           <CopyLine
-            label="Fix TLS / systemd / heartbeat"
+            label="Fix TLS / CA / pin / systemd (HTTPS)"
+            command={buildFixAgentConnectionHttpsCommand()}
+          />
+          <CopyLine
+            label="Fix TLS (HTTP bootstrap :4000)"
             command={buildFixAgentConnectionCommand()}
           />
         </div>

@@ -1,6 +1,7 @@
 /** How recently an agent must have checked in to count as online. */
+/** Default ~6 missed 10s heartbeats before showing stale (was 45s — too aggressive). */
 export const AGENT_ONLINE_THRESHOLD_MS = Number(
-  process.env.AGENT_ONLINE_THRESHOLD_MS ?? 45_000,
+  process.env.AGENT_ONLINE_THRESHOLD_MS ?? 120_000,
 );
 
 /** Metrics older than this are treated as stale in monitoring views. */

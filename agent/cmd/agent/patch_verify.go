@@ -204,6 +204,71 @@ func listDnfUpgradablePlan(sudo bool, securityOnly bool) ([]patchPlanEntry, erro
 	return plan, nil
 }
 
+func listPacmanUpgradablePlan(sudo bool, _securityOnly bool) ([]patchPlanEntry, error) {
+	if _, err := exec.LookPath("pacman"); err != nil {
+		return nil, fmt.Errorf("pacman not found")
+	}
+	return pendingToPlanEntries(collectPacmanUpgradable(sudo)), nil
+}
+
+func listApkUpgradablePlan(sudo bool, _securityOnly bool) ([]patchPlanEntry, error) {
+	if _, err := exec.LookPath("apk"); err != nil {
+		return nil, fmt.Errorf("apk not found")
+	}
+	return pendingToPlanEntries(collectApkUpgradable(sudo)), nil
+}
+
+func listZypperUpgradablePlan(sudo bool, _securityOnly bool) ([]patchPlanEntry, error) {
+	if _, err := exec.LookPath("zypper"); err != nil {
+		return nil, fmt.Errorf("zypper not found")
+	}
+	return pendingToPlanEntries(collectZypperUpgradable(sudo)), nil
+}
+
+func listEmergeUpgradablePlan(sudo bool, _securityOnly bool) ([]patchPlanEntry, error) {
+	if _, err := exec.LookPath("emerge"); err != nil {
+		return nil, fmt.Errorf("emerge not found")
+	}
+	return pendingToPlanEntries(collectEmergeUpgradable(sudo)), nil
+}
+
+func listBrewUpgradablePlan(_sudo bool, _securityOnly bool) ([]patchPlanEntry, error) {
+	if _, err := exec.LookPath("brew"); err != nil {
+		return nil, fmt.Errorf("brew not found")
+	}
+	return pendingToPlanEntries(collectBrewUpgradable()), nil
+}
+
+func listPkgUpgradablePlan(sudo bool, _securityOnly bool) ([]patchPlanEntry, error) {
+	if _, err := exec.LookPath("pkg"); err != nil {
+		return nil, fmt.Errorf("pkg not found")
+	}
+	return pendingToPlanEntries(collectPkgUpgradable(sudo)), nil
+}
+
+func listUpgradablePlanForManager(sudo bool, manager string, securityOnly bool) ([]patchPlanEntry, error) {
+	switch manager {
+	case "dnf", "yum":
+		return listDnfUpgradablePlan(sudo, securityOnly)
+	case "apt", "dpkg":
+		return listAptUpgradablePlan(sudo, securityOnly)
+	case "pacman":
+		return listPacmanUpgradablePlan(sudo, securityOnly)
+	case "apk":
+		return listApkUpgradablePlan(sudo, securityOnly)
+	case "zypper":
+		return listZypperUpgradablePlan(sudo, securityOnly)
+	case "emerge":
+		return listEmergeUpgradablePlan(sudo, securityOnly)
+	case "brew":
+		return listBrewUpgradablePlan(sudo, securityOnly)
+	case "pkg":
+		return listPkgUpgradablePlan(sudo, securityOnly)
+	default:
+		return nil, fmt.Errorf("unsupported manager %s", manager)
+	}
+}
+
 func pendingToPlanEntries(pending []pendingUpdate) []patchPlanEntry {
 	plan := make([]patchPlanEntry, 0, len(pending))
 	for _, p := range pending {

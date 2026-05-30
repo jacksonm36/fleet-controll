@@ -1,16 +1,20 @@
 import { prisma } from "@fleet/db";
-import type { FastifyInstance } from "fastify";
+import type { AppInstance } from "../types/app-instance.js";
 import { cacheWrap } from "../lib/cache.js";
 import {
   isAgentOnline,
-  isMetricsStale,
   onlineThresholdDate,
 } from "../lib/agent-presence.js";
 import {
+  fleetAgentMtlsMode,
   fleetAutoEncrypt,
   fleetPublicHost,
   fleetRequireTls,
+  fleetTlsMinVersionForAgents,
+  fleetTlsPinAuto,
 } from "../lib/env.js";
+import { fleetMtlsCaReady } from "../lib/fleet-mtls.js";
+import { controllerTlsPinInfo } from "../lib/fleet-tls-pin.js";
 import {
   fleetCaCertPath,
   fleetCaDownloadUrl,
@@ -19,9 +23,40 @@ import {
   securePublicBase,
 } from "../lib/fleet-urls.js";
 import { runSecurityChecks } from "../lib/security-config.js";
-import { assertAdmin, requireUser } from "../middleware/auth.js";
+import {
+  queueTlsRolloutJobs,
+  tlsFixScriptForAgent,
+} from "../lib/fleet-agent-tls-rollout.js";
+import { rejectShellAutomationIfDisabled } from "../lib/automation-guard.js";
+import { assertAdmin, assertOperator, requireUser } from "../middleware/auth.js";
+import { z } from "zod";
 
-export async function fleetRoutes(app: FastifyInstance) {
+async function listCveFindingsWithAgents(
+  severity?: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW",
+) {
+  return prisma.cveFinding.findMany({
+    where: severity ? { severity } : undefined,
+    orderBy: [{ severity: "asc" }, { cveId: "asc" }],
+    take: 500,
+    include: {
+      agent: {
+        select: {
+          id: true,
+          hostname: true,
+          osType: true,
+          lastSeenAt: true,
+          status: true,
+        },
+      },
+    },
+  });
+}
+
+type CveFindingWithAgent = Awaited<
+  ReturnType<typeof listCveFindingsWithAgents>
+>[number];
+
+export async function fleetRoutes(app: AppInstance) {
   app.get(
     "/security",
     { preHandler: requireUser },
@@ -112,25 +147,10 @@ export async function fleetRoutes(app: FastifyInstance) {
       const severity = (req.query as { severity?: string }).severity;
       const { data, meta } = await cacheWrap("fleet:cves", 15, async () => {
         const now = Date.now();
-        const findings = await prisma.cveFinding.findMany({
-          where: severity
-            ? { severity: severity as "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" }
-            : undefined,
-          orderBy: [{ severity: "asc" }, { cveId: "asc" }],
-          take: 500,
-          include: {
-            agent: {
-              select: {
-                id: true,
-                hostname: true,
-                osType: true,
-                lastSeenAt: true,
-                status: true,
-              },
-            },
-          },
-        });
-        return findings.map((f) => ({
+        const findings = await listCveFindingsWithAgents(
+          severity as "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | undefined,
+        );
+        return findings.map((f: CveFindingWithAgent) => ({
           ...f,
           agent: {
             id: f.agent.id,
@@ -171,6 +191,57 @@ export async function fleetRoutes(app: FastifyInstance) {
         sslKeyPath: process.env.FLEET_SSL_KEY?.trim() || "/etc/fleet/ssl/privkey.pem",
         issuer: "Fleet TLS (nginx ssl_certificate)",
         trustProxy: process.env.TRUST_PROXY === "1",
+        agentMtls: fleetAgentMtlsMode(),
+        agentMtlsCaReady: fleetMtlsCaReady(),
+        tlsPinUrl: caUrl
+          ? `${publicUrl}/api/public/tls-pin.json`
+          : null,
+        tlsPinAuto: fleetTlsPinAuto(),
+        tlsPin: controllerTlsPinInfo(),
+        sessionCiphers: "ChaCha20-Poly1305,AES-GCM (TLS 1.2/1.3)",
+        agentTlsMinVersion: fleetTlsMinVersionForAgents(),
+        fixAgentScriptUrl: `${publicUrl}/api/public/fix-agent-connection.sh`,
+        rolloutHint:
+          "POST /api/fleet/rollout-agent-tls queues fix script on online agents; run scripts/rollout-fleet-agent-tls.sh on the controller.",
+      };
+    },
+  );
+
+  app.post(
+    "/rollout-agent-tls",
+    { preHandler: requireUser },
+    async (req, reply) => {
+      if (!assertOperator(req, reply)) return;
+      if (rejectShellAutomationIfDisabled("SHELL_SCRIPT", reply)) return;
+
+      const parsed = z
+        .object({
+          queueJobs: z.boolean().optional().default(true),
+        })
+        .safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return reply.code(400).send({ error: "invalid_body" });
+      }
+
+      const apiPort = Number(process.env.API_PORT ?? 4000);
+      const publicUrl = securePublicBase(req, apiPort);
+
+      if (!parsed.data.queueJobs) {
+        return {
+          queued: 0,
+          skippedOffline: 0,
+          fixScriptUrl: `${publicUrl}/api/public/fix-agent-connection.sh`,
+          manualCommand: `curl -fsSL '${publicUrl}/api/public/fix-agent-connection.sh' | bash`,
+          sampleScript: tlsFixScriptForAgent(publicUrl),
+        };
+      }
+
+      const result = await queueTlsRolloutJobs(publicUrl);
+      return {
+        ...result,
+        centralUrl: publicUrl,
+        fixScriptUrl: `${publicUrl}/api/public/fix-agent-connection.sh`,
+        hint: "Each online agent runs fix-agent-connection.sh (CA, SHA-512 pin, systemd env). Push agent binary separately from Agents page.",
       };
     },
   );

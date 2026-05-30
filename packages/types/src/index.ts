@@ -2,7 +2,13 @@
  * Shared contracts between central API, web UI, and agents (inventory v1, job v1).
  */
 
-export type OsType = "linux" | "windows";
+export type OsType =
+  | "linux"
+  | "windows"
+  | "darwin"
+  | "freebsd"
+  | "openbsd"
+  | "netbsd";
 
 export interface InventoryPackageV1 {
   name: string;
@@ -176,6 +182,15 @@ export interface CrowdSecSnapshotV1 {
   raw?: Record<string, unknown>;
 }
 
+export interface FleetTlsPinInfoV1 {
+  spkiSha512: string;
+  fleetTlsPin: string;
+  spkiSha256: string;
+  algorithm: string;
+  hash: string;
+  hint: string;
+}
+
 export interface FleetTlsSetupV1 {
   tlsRequired: boolean;
   autoEncrypt?: boolean;
@@ -188,6 +203,13 @@ export interface FleetTlsSetupV1 {
   sslKeyPath?: string;
   issuer: string;
   trustProxy?: boolean;
+  agentMtls?: string;
+  agentMtlsCaReady?: boolean;
+  tlsPinUrl?: string | null;
+  tlsPinAuto?: boolean;
+  tlsPin?: FleetTlsPinInfoV1 | null;
+  sessionCiphers?: string;
+  agentTlsMinVersion?: string | null;
 }
 
 export interface MetricsPayloadV1 {

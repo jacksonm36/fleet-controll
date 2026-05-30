@@ -16,11 +16,13 @@ import type { AgentMetricHistory } from "@/components/AgentMetricCharts";
 import { apiFetch } from "@/lib/api";
 import { usePolling } from "@/lib/usePolling";
 import { useSession } from "@/lib/useSession";
+import { OsInfo } from "@/components/OsInfo";
 
 type HostMetrics = {
   id: string;
   hostname: string;
   osType: string;
+  primaryIp?: string | null;
   online: boolean;
   metricsStale: boolean;
   lastSeenAt: string | null;
@@ -45,6 +47,7 @@ type AgentContext = {
     hostname: string;
     osType: string;
     osDetail: string | null;
+    primaryIp?: string | null;
     version: string | null;
     status: string;
     enrolledAt: string;
@@ -250,6 +253,12 @@ function AgentMonitoringPageInner() {
   }, [agentId, range]);
 
   useEffect(() => {
+    if (TAB_IDS.has(tabParam as MonitoringTab)) {
+      setTab(tabParam as MonitoringTab);
+    }
+  }, [tabParam]);
+
+  useEffect(() => {
     if (!hydrated || !authed || !agentId) return;
     setLoading(true);
     void reload();
@@ -258,7 +267,7 @@ function AgentMonitoringPageInner() {
   usePolling(() => {
     if (!hydrated || !authed || !agentId) return;
     void reload();
-  }, 10_000, false);
+  }, 5_000, false);
 
   const badges = useMemo(
     () => ({
@@ -291,7 +300,16 @@ function AgentMonitoringPageInner() {
               ← Fleet monitoring
             </Link>
             <h1 className="mt-1 text-2xl font-semibold">
-              {h?.hostname ?? "Agent metrics"}
+              {h ? (
+                <Link
+                  href={`/agents/${h.id}`}
+                  className="text-[hsl(var(--accent))] hover:underline"
+                >
+                  {h.hostname}
+                </Link>
+              ) : (
+                "Agent metrics"
+              )}
             </h1>
             <p className="mt-1 text-sm text-white/60">
               Metrics, logs, jobs, and security for this host.
@@ -399,7 +417,13 @@ function AgentMonitoringPageInner() {
 
             <div className="rounded-b-lg rounded-tr-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 sm:p-5">
               {tab === "overview" && (
-                <OverviewPanel host={h} ctx={ctx} />
+                <OverviewPanel
+                  host={h}
+                  ctx={ctx}
+                  metricsIntervalSec={data?.config.metricsIntervalSec ?? 5}
+                  onOpenMetrics={() => setTab("metrics")}
+                  onOpenLogs={() => setTab("logs")}
+                />
               )}
               {tab === "metrics" && (
                 <MetricsPanel data={data} range={range} />
@@ -426,6 +450,12 @@ function AgentMonitoringPageInner() {
   );
 }
 
+function streamLabel(h: HostMetrics): string {
+  if (!h.online) return "offline";
+  if (h.metricsStale) return "stale (no recent metrics)";
+  return "live";
+}
+
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4">
@@ -438,17 +468,70 @@ function Stat({ label, value }: { label: string; value: string }) {
 function OverviewPanel({
   host: h,
   ctx,
+  metricsIntervalSec,
+  onOpenMetrics,
+  onOpenLogs,
 }: {
   host: HostMetrics;
   ctx: AgentContext;
+  metricsIntervalSec: number;
+  onOpenMetrics: () => void;
+  onOpenLogs: () => void;
 }) {
   const a = ctx.agent;
   return (
     <div className="space-y-5">
+      <Section title="Live metrics (agent snapshot)">
+        <p className="mb-3 text-xs text-white/50">
+          Collected every ~{metricsIntervalSec}s from the agent (CPU, memory, disk,
+          network, load, users, health). Historical charts are on the Metrics tab.
+        </p>
+        <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 text-sm">
+          <Info label="Stream" value={streamLabel(h)} />
+          <Info label="CPU" value={fmtPct(h.cpuPercent)} />
+          <Info label="Memory" value={fmtPct(h.memUsedPercent)} />
+          <Info label="Disk /" value={fmtPct(h.diskRootUsedPercent)} />
+          <Info
+            label="Network"
+            value={`↓ ${fmtBps(h.networkRxBps)} · ↑ ${fmtBps(h.networkTxBps)}`}
+          />
+          <Info label="Load (1m)" value={h.load1 != null ? h.load1.toFixed(2) : "—"} />
+          <Info label="Logged-in users" value={String(h.loggedInUsers ?? "—")} />
+          <Info
+            label="Health"
+            value={`${h.healthScore ?? "—"} / 100 (${h.healthStatus ?? "unknown"})`}
+          />
+          <Info label="Primary IP" value={h.primaryIp ?? a.primaryIp ?? "—"} />
+          <Info label="Last metrics" value={fmtTime(h.lastMetricsAt)} />
+          <Info label="Last seen" value={fmtTime(h.lastSeenAt)} />
+        </dl>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={onOpenMetrics}
+            className="rounded-md border border-white/20 px-3 py-1.5 text-xs hover:bg-white/10"
+          >
+            Metrics charts →
+          </button>
+          <button
+            type="button"
+            onClick={onOpenLogs}
+            className="rounded-md border border-white/20 px-3 py-1.5 text-xs hover:bg-white/10"
+          >
+            Host logs →
+          </button>
+        </div>
+      </Section>
+
       <Section title="Host identity">
         <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 text-sm">
           <Info label="Hostname" value={a.hostname} />
-          <Info label="OS" value={`${a.osType}${a.osDetail ? ` · ${a.osDetail}` : ""}`} />
+          <div>
+            <dt className="text-xs text-white/40">OS</dt>
+            <dd className="mt-0.5">
+              <OsInfo osType={a.osType} osDetail={a.osDetail} />
+            </dd>
+          </div>
           <Info label="Agent version" value={a.version ?? "—"} />
           <Info label="Status" value={a.status} />
           <Info label="Enrolled" value={fmtTime(a.enrolledAt)} />
@@ -472,7 +555,15 @@ function OverviewPanel({
       <Section title="Inventory snapshot">
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           <CountCard label="Packages" value={ctx.counts.packages} sub={`${ctx.counts.outdatedPackages} outdated`} />
-          <CountCard label="Services" value={ctx.counts.services} sub={`${ctx.failedServices.length} not running`} />
+          <CountCard
+            label="Services"
+            value={ctx.counts.services}
+            sub={
+              ctx.failedServices.length > 0
+                ? `${ctx.failedServices.length} need attention`
+                : "all healthy"
+            }
+          />
           <CountCard label="Containers" value={ctx.counts.containers} />
           <CountCard label="Jobs" value={ctx.counts.jobs} />
           <CountCard label="Patch plans" value={ctx.counts.patchPlans} />
@@ -481,7 +572,7 @@ function OverviewPanel({
       </Section>
 
       {ctx.failedServices.length > 0 ? (
-        <Section title="Services not running">
+        <Section title="Services needing attention">
           <ul className="space-y-1 text-sm">
             {ctx.failedServices.map((s) => (
               <li key={s.name} className="flex justify-between gap-2 rounded bg-white/5 px-2 py-1">
@@ -729,7 +820,7 @@ function Section({
   );
 }
 
-function Info({ label, value }: { label: string; value: string }) {
+function Info({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div>
       <dt className="text-xs text-white/40">{label}</dt>

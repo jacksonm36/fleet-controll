@@ -1,3 +1,5 @@
+import { osvEcosystem as resolveOsvEcosystem, parseOsDetail } from "@fleet/os-display";
+
 /**
  * Query Google OSV API for known vulnerabilities in installed OS packages.
  * https://google.osv.dev/
@@ -75,38 +77,20 @@ export function osvEcosystem(
   osDetail: string | null | undefined,
   manager: string,
 ): string | null {
-  const m = manager.toLowerCase();
-  if (!["dpkg", "apt", "rpm", "dnf", "yum"].includes(m)) return null;
-  if (osType !== "linux") return null;
-
-  const rel = looksLikeOsRelease(osDetail) ? parseOsRelease(osDetail) : {};
-  const id = (rel.ID ?? rel.ID_LIKE ?? "").toLowerCase();
-  const ver = rel.VERSION_ID ?? "";
-
-  if (id.includes("debian") || m === "dpkg") {
-    if (ver) return `Debian:${ver.split(".")[0]}`;
-    return "Debian:12";
-  }
-  if (id.includes("ubuntu")) {
-    if (ver) return `Ubuntu:${ver}`;
-    return "Ubuntu:22.04";
-  }
-  if (id.includes("rhel") || id.includes("centos") || id.includes("rocky") || id.includes("almalinux")) {
-    if (ver) return `Red Hat:${ver.split(".")[0]}`;
-    return "Red Hat:9";
-  }
-  if (id.includes("fedora")) {
-    if (ver) return `Fedora:${ver}`;
-    return null;
-  }
-  if (id.includes("alpine")) {
-    if (ver) return `Alpine:${ver}`;
-    return null;
-  }
-  if (m === "rpm" || m === "dnf" || m === "yum") {
-    if (ver) return `Red Hat:${ver.split(".")[0]}`;
-  }
-  return null;
+  const parsed = parseOsDetail(osType, osDetail);
+  return resolveOsvEcosystem(
+    osType,
+    osDetail,
+    manager,
+    parsed
+      ? {
+          distro: parsed.distro,
+          family: parsed.family,
+          versionId: parsed.versionId,
+          id: parsed.id,
+        }
+      : null,
+  );
 }
 
 function cvssMetric(vector: string, key: string): string {

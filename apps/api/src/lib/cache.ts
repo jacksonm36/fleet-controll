@@ -91,6 +91,7 @@ export async function invalidateFleetCaches(agentId?: string): Promise<void> {
   await cacheDel("agents:list");
   await cacheDel(
     "crowdsec:status",
+    "crowdsec:agents",
     "crowdsec:alerts",
     "crowdsec:decisions",
   );

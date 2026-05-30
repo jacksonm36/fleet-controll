@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import dotenv from "dotenv";
-import Fastify from "fastify";
+import { fastify } from "./types/app-instance.js";
 
 import { isProduction } from "./lib/env.js";
 import { registerPlugins, registerRoutes } from "./routes/register.js";
@@ -20,24 +20,25 @@ async function main() {
   resolveJwtSecret();
   assertProductionSecrets();
 
-  const app = Fastify({
+  const app = fastify({
     logger: true,
     trustProxy: resolveTrustProxy(),
     bodyLimit: 1_048_576,
     requestTimeout: 60_000,
   });
 
-  app.setErrorHandler((err, _req, reply) => {
+  app.setErrorHandler((err: Error & { statusCode?: number; code?: string }, _req, reply) => {
     let status =
-      typeof (err as { statusCode?: number }).statusCode === "number"
-        ? (err as { statusCode: number }).statusCode
-        : 500;
+      typeof err.statusCode === "number" ? err.statusCode : 500;
 
     const msg = err.message ?? "";
+    const code = (err as { code?: string }).code ?? "";
     if (
       status === 429 ||
       msg.includes("rate_limit") ||
-      (err as { code?: string }).code === "FST_ERR_RATE_LIMIT"
+      msg.includes("Too many requests") ||
+      code === "FST_ERR_RATE_LIMIT" ||
+      code === "FST_ERR_RATE_LIMIT_EXCEEDED"
     ) {
       status = 429;
     }

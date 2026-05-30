@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Shell } from "@/components/Shell";
 import { AuthLoadingShell } from "@/components/AuthLoadingShell";
 import { AgentActivityConsole } from "@/components/AgentActivityConsole";
 import { JobLogs } from "@/components/JobLogs";
 import { PatchPanel } from "@/components/PatchPanel";
+import { CrowdSecAgentTab } from "@/components/CrowdSecAgentTab";
 import { OsInfo } from "@/components/OsInfo";
 import { apiFetch } from "@/lib/api";
 import { pickActivePatchPlan } from "@/lib/patch-ui";
@@ -152,6 +153,7 @@ export default function AgentDetailPage() {
   const router = useRouter();
   const { hydrated, checked, authed } = useSession();
   const params = useParams<{ id: string }>();
+  const searchParams = useSearchParams();
   const id = params.id;
 
   const [tab, setTab] = useState<
@@ -166,6 +168,25 @@ export default function AgentDetailPage() {
     | "patches"
     | "console"
   >("overview");
+
+  useEffect(() => {
+    const t = searchParams.get("tab");
+    if (
+      t === "crowdsec" ||
+      t === "overview" ||
+      t === "applications" ||
+      t === "containers" ||
+      t === "packages" ||
+      t === "services" ||
+      t === "cves" ||
+      t === "jobs" ||
+      t === "patches" ||
+      t === "console"
+    ) {
+      setTab(t);
+    }
+  }, [searchParams]);
+
   const [agent, setAgent] = useState<Agent | null>(null);
   const [packages, setPackages] = useState<Pkg[]>([]);
   const [applications, setApplications] = useState<AppsSummary | null>(null);
@@ -197,7 +218,7 @@ export default function AgentDetailPage() {
     text: string;
   } | null>(null);
 
-  const reload = async () => {
+  const reload = useCallback(async () => {
     try {
       const [a, p, apps, ctn, s, cs, j, cveData, plans] = await Promise.all([
         apiFetch<Agent>(`/api/agents/${id}`, { cacheTtlMs: 4_000 }),
@@ -241,13 +262,13 @@ export default function AgentDetailPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [id]);
 
   useEffect(() => {
     if (!hydrated || !authed) return;
     setLoading(true);
     void reload().catch(() => setLoading(false));
-  }, [id, hydrated, authed]);
+  }, [hydrated, authed, reload]);
 
   usePolling(() => {
     if (!hydrated || !authed) return;
@@ -381,7 +402,7 @@ export default function AgentDetailPage() {
     }
   }
 
-  async function startKernelMaintenance() {
+  async function startKernelMaintenance(rebootOnly = false) {
     if (!agent || agent.osType === "windows") {
       setActionMsg({
         kind: "err",
@@ -394,13 +415,18 @@ export default function AgentDetailPage() {
     try {
       const res = await apiFetch<{ jobId: string }>(
         `/api/agents/${id}/kernel-maintenance`,
-        { method: "POST" },
+        {
+          method: "POST",
+          body: JSON.stringify({ rebootOnly, rebootDelaySec: 5 }),
+        },
       );
       setConsoleJobId(res.jobId);
       setTab("patches");
       setActionMsg({
         kind: "ok",
-        text: "Kernel update and reboot queued — live output appears in the activity console.",
+        text: rebootOnly
+          ? "Reboot queued — live output appears in the activity console."
+          : "Kernel update and reboot queued — live output appears in the activity console.",
       });
       await reload();
     } catch (e) {
@@ -845,7 +871,13 @@ export default function AgentDetailPage() {
                 </div>
                 <div>
                   <dt className="text-xs text-white/50">CrowdSec</dt>
-                  <dd>{agent.crowdsecInstalled ? "Reporting" : "Not reporting"}</dd>
+                  <dd>
+                    {snapshot
+                      ? "Snapshot on file"
+                      : agent.crowdsecInstalled
+                        ? "Installed (awaiting snapshot)"
+                        : "Not detected"}
+                  </dd>
                 </div>
                 <div>
                   <dt className="text-xs text-white/50">Reboot</dt>
@@ -1296,12 +1328,12 @@ export default function AgentDetailPage() {
           </div>
         ) : null}
 
-        {tab === "crowdsec" ? (
-          <pre className="max-h-[520px] overflow-auto rounded-lg border border-[hsl(var(--border))] bg-black/40 p-4 text-xs text-emerald-100">
-            {snapshot
-              ? JSON.stringify(snapshot, null, 2)
-              : "No CrowdSec snapshot yet — agent will populate after cscli/LAPI checks succeed."}
-          </pre>
+        {tab === "crowdsec" && agent ? (
+          <CrowdSecAgentTab
+            agentId={agent.id}
+            hostname={agent.hostname}
+            snapshot={snapshot}
+          />
         ) : null}
 
         {tab === "jobs" ? (
@@ -1429,9 +1461,10 @@ export default function AgentDetailPage() {
             setAckReboot={setAckReboot}
             actionBusy={actionBusy}
             onCheckUpdates={() => void createPatchPlan()}
-            onKernelMaintenance={() => void startKernelMaintenance()}
+            onKernelMaintenance={(rebootOnly) => void startKernelMaintenance(rebootOnly)}
             rebootRequired={agent.rebootRequired}
             kernelRunning={agent.kernelRunning}
+            kernelInstalled={agent.kernelInstalled}
             onInstall={() => void approvePatchPlan()}
             onCancel={(planId) => void rejectPatchPlan(planId)}
             onSelectPlan={(pl) => {

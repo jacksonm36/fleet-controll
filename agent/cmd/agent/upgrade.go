@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 type binaryUpdateOffer struct {
@@ -26,7 +27,17 @@ type binaryUpdateOffer struct {
 	Force   bool   `json:"force"`
 }
 
-var upgradeMu sync.Mutex
+var (
+	upgradeMu            sync.Mutex
+	upgradeAttemptActive sync.Mutex // held for whole applyBinaryUpdate
+	upgradeInFlight      bool
+)
+
+const upgradeLockMaxAge = 25 * time.Minute
+
+func upgradeLockPath() string {
+	return filepath.Join(fleetAgentDataDir(), ".upgrade.lock")
+}
 
 func autoUpdateEnabled() bool {
 	v := strings.ToLower(strings.TrimSpace(os.Getenv("FLEET_AUTO_UPDATE")))
@@ -47,23 +58,59 @@ func maybeApplyBinaryUpdateInternal(cli *http.Client, base, token string, offer 
 	}
 	cur := agentBuildID()
 	if cur != "" && cur != "dev" && strings.EqualFold(cur, offer.BuildID) {
+		log.Printf("binary update: already on build %s — nothing to do", offer.BuildID)
 		return
 	}
 	if strings.EqualFold(agentVersionString(), offer.Version+"+"+offer.BuildID) {
+		log.Printf("binary update: already running %s — nothing to do", agentVersionString())
 		return
 	}
+	if blocked, ours := upgradeLockBlockingReason(upgradeLockPath()); blocked {
+		if ours {
+			log.Printf("binary update: handoff already in progress — skipping duplicate attempt")
+		} else {
+			log.Printf("binary update: another upgrade is in progress — skipping duplicate attempt")
+		}
+		return
+	}
+	upgradeAttemptActive.Lock()
+	if upgradeInFlight {
+		upgradeAttemptActive.Unlock()
+		log.Printf("binary update: upgrade already running in this process — skipping")
+		return
+	}
+	upgradeInFlight = true
+	upgradeAttemptActive.Unlock()
+
+	log.Printf(
+		"binary update: received offer %s+%s (asset=%s force=%v)",
+		offer.Version,
+		offer.BuildID,
+		offer.Asset,
+		effectiveForce,
+	)
 	go func() {
+		defer func() {
+			upgradeAttemptActive.Lock()
+			upgradeInFlight = false
+			upgradeAttemptActive.Unlock()
+		}()
 		if err := applyBinaryUpdate(cli, base, token, offer); err != nil {
-			log.Printf("binary auto-update failed: %v", err)
+			log.Printf("binary update failed: %v", err)
 		}
 	}()
 }
 
 func triggerBinaryUpdateCheck(cli *http.Client, base, token string) {
 	go func() {
+		log.Printf("binary update: controller requested upgrade check")
 		offer, err := fetchBinaryUpdateOffer(cli, base, token)
 		if err != nil {
-			log.Printf("binary update check: %v", err)
+			log.Printf("binary update check failed: %v", err)
+			return
+		}
+		if offer == nil {
+			log.Printf("binary update: controller reports agent is up to date")
 			return
 		}
 		// Controller-initiated push should override FLEET_AUTO_UPDATE.
@@ -164,6 +211,27 @@ func applyBinaryUpdate(cli *http.Client, base, token string, offer *binaryUpdate
 		return err
 	}
 
+	lockPath := upgradeLockPath()
+	if healed, reason := healStaleUpgradeLock(); healed {
+		log.Printf("binary update: cleared stale lock (%s)", reason)
+	}
+	if blocked, ours := upgradeLockBlockingReason(lockPath); blocked {
+		if ours {
+			log.Printf("binary update: upgrade helper running — skipping duplicate apply")
+			return nil
+		}
+		return fmt.Errorf("upgrade already in progress (lock %s)", lockPath)
+	}
+	if err := acquireUpgradeLock(lockPath); err != nil {
+		return err
+	}
+	releaseLock := true
+	defer func() {
+		if releaseLock {
+			_ = os.Remove(lockPath)
+		}
+	}()
+
 	setBinaryUpgradeState(cli, base, token, true, "")
 	reportBinaryDeployEvent(cli, base, token, offer.BuildID, "download", "info",
 		fmt.Sprintf("Downloading %s (build %s)", offer.Asset, offer.BuildID))
@@ -181,25 +249,24 @@ func applyBinaryUpdate(cli *http.Client, base, token string, offer *binaryUpdate
 		return err
 	}
 
-	log.Printf("downloading agent binary %s (build %s) to %s", offer.Asset, offer.BuildID, dest)
+	log.Printf("binary update: downloading %s (build %s) from controller", offer.Asset, offer.BuildID)
 	tmp, err := downloadVerifiedBinary(cli, downloadURL, offer.SHA256, destDir)
 	if err != nil {
 		return err
+	}
+	if st, statErr := os.Stat(tmp); statErr == nil {
+		log.Printf(
+			"binary update: download complete — %d bytes, sha256 verified, installing to %s",
+			st.Size(),
+			dest,
+		)
+	} else {
+		log.Printf("binary update: download complete — sha256 verified, installing to %s", dest)
 	}
 	reportBinaryDeployEvent(cli, base, token, offer.BuildID, "verify", "success",
 		"Download verified (sha256 OK)")
 
 	scope := detectFleetAgentSystemdScope()
-	lockPath := filepath.Join(fleetAgentDataDir(), ".upgrade.lock")
-	if err := acquireUpgradeLock(lockPath); err != nil {
-		return err
-	}
-	releaseLock := true
-	defer func() {
-		if releaseLock {
-			_ = os.Remove(lockPath)
-		}
-	}()
 
 	handedOff := false
 	defer func() {
@@ -229,6 +296,7 @@ func applyBinaryUpdate(cli *http.Client, base, token string, offer *binaryUpdate
 			reportBinaryDeployEvent(cli, base, token, offer.BuildID, "restart", "warn",
 				"Binary installed; restart fleet-agent manually to load the new build")
 			setBinaryUpgradeState(cli, base, token, false, "")
+			logBinaryUpgradeSuccess(offer.Version, offer.BuildID)
 			return nil
 		}
 		handoff.Mode = "restart"
@@ -251,6 +319,7 @@ func applyBinaryUpdate(cli *http.Client, base, token string, offer *binaryUpdate
 			return fmt.Errorf("install failed (no systemd): %w", err)
 		}
 		setBinaryUpgradeState(cli, base, token, false, "")
+		logBinaryUpgradeSuccess(offer.Version, offer.BuildID)
 		return nil
 	}
 
@@ -268,20 +337,56 @@ func applyBinaryUpdate(cli *http.Client, base, token string, offer *binaryUpdate
 	return nil
 }
 
+func upgradeLockBlockingReason(lockPath string) (blocked bool, ourHandoff bool) {
+	if _, err := os.Stat(lockPath); err != nil {
+		if os.IsNotExist(err) {
+			return false, false
+		}
+		return false, false
+	}
+	if stale, _ := upgradeLockIsStale(lockPath); stale {
+		return false, false
+	}
+	pid, err := readUpgradeLockPID(lockPath)
+	if err != nil {
+		return true, false
+	}
+	if pid == os.Getpid() {
+		return true, true
+	}
+	return true, false
+}
+
 func acquireUpgradeLock(lockPath string) error {
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err != nil {
-		if os.IsExist(err) {
-			return fmt.Errorf("upgrade already in progress (lock %s)", lockPath)
+	tryCreate := func() error {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
 		}
+		_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
+		_ = f.Close()
+		return nil
+	}
+	if err := tryCreate(); err == nil {
+		return nil
+	} else if !os.IsExist(err) {
 		return err
 	}
-	_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
-	_ = f.Close()
-	return nil
+	if stale, reason := upgradeLockIsStale(lockPath); stale {
+		log.Printf("binary update: clearing stale upgrade lock (%s)", reason)
+		_ = os.Remove(lockPath)
+		if err := tryCreate(); err != nil {
+			if os.IsExist(err) {
+				return fmt.Errorf("upgrade already in progress (lock %s)", lockPath)
+			}
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("upgrade already in progress (lock %s)", lockPath)
 }
 
 func validateBinaryDownloadURL(controllerBase, downloadURL string) error {
@@ -351,6 +456,48 @@ func fleetAgentDataDir() string {
 	return filepath.Join(os.TempDir(), "fleet-agent")
 }
 
+func upgradeSuccessMarkerPath() string {
+	return filepath.Join(fleetAgentDataDir(), "upgrade-success.marker")
+}
+
+func writeUpgradeSuccessMarker(buildID, version string) error {
+	if err := os.MkdirAll(fleetAgentDataDir(), 0o755); err != nil {
+		return err
+	}
+	line := strings.TrimSpace(buildID) + "|" + strings.TrimSpace(version)
+	return os.WriteFile(upgradeSuccessMarkerPath(), []byte(line+"\n"), 0o644)
+}
+
+func logBinaryUpgradeSuccess(version, buildID string) {
+	v := strings.TrimSpace(version)
+	b := strings.TrimSpace(buildID)
+	switch {
+	case v != "" && b != "":
+		log.Printf("binary upgrade completed successfully — now running %s+%s", v, b)
+	case b != "":
+		log.Printf("binary upgrade completed successfully — build %s", b)
+	default:
+		log.Printf("binary upgrade completed successfully")
+	}
+}
+
+// logPendingUpgradeSuccess prints a clear journal line after a detached upgrade restarts the service.
+func logPendingUpgradeSuccess() {
+	path := upgradeSuccessMarkerPath()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	_ = os.Remove(path)
+	parts := strings.SplitN(strings.TrimSpace(string(b)), "|", 2)
+	buildID := parts[0]
+	version := ""
+	if len(parts) > 1 {
+		version = parts[1]
+	}
+	logBinaryUpgradeSuccess(version, buildID)
+}
+
 func detectFleetAgentSystemdScope() string {
 	if runtime.GOOS != "linux" {
 		return "none"
@@ -388,7 +535,8 @@ func spawnDetachedBinaryUpgrade(h upgradeHandoff) error {
 	scriptPath := filepath.Join(dataDir, "apply-binary-upgrade.sh")
 	logPath := filepath.Join(dataDir, "upgrade.log")
 	script := buildUpgradeHelperScript(h)
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+	// Owner-only: script runs as root/user and reads the agent token file.
+	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
 		return err
 	}
 
@@ -412,9 +560,9 @@ func spawnDetachedBinaryUpgrade(h upgradeHandoff) error {
 
 func buildUpgradeHelperScript(h upgradeHandoff) string {
 	caFile := strings.TrimSpace(os.Getenv("FLEET_CA_FILE"))
-	caSnippet := ""
+	caSnippet := `CURL_TLS=""`
 	if caFile != "" {
-		caSnippet = fmt.Sprintf(`if [ -f %s ]; then CURL_TLS="--cacert %s"; fi`, shellQuote(caFile), shellQuote(caFile))
+		caSnippet = fmt.Sprintf(`CURL_TLS="--cacert %s"`, shellQuote(caFile))
 	}
 	mode := h.Mode
 	if mode == "" {
@@ -429,13 +577,20 @@ DEST=%s
 CENTRAL=%s
 TOKEN_FILE=%s
 BUILD_ID=%s
+VERSION=%s
 SCOPE=%s
 USE_SUDO=%s
 LOCK=%s
 LOG=%s
+MARKER="$(dirname "$LOG")/upgrade-success.marker"
 
-log() { echo "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ) $*" >>"$LOG"; }
-CURL_TLS="-k"
+log() {
+  msg="$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ) $*"
+  echo "$msg" >>"$LOG"
+  if command -v logger >/dev/null 2>&1; then
+    logger -t fleet-agent-upgrade -- "$*"
+  fi
+}
 %s
 
 cleanup() { rm -f "$LOCK"; }
@@ -548,6 +703,8 @@ if ! wait_active; then
 fi
 
 log "fleet-agent.service active (build $BUILD_ID)"
+printf '%%s|%%s\n' "$BUILD_ID" "$VERSION" >"$MARKER"
+log "SUCCESS: binary upgrade complete — installed $VERSION+$BUILD_ID, service restarted"
 post_state false ""
 post_event success online "Service restarted after binary upgrade"
 exit 0
@@ -558,6 +715,7 @@ exit 0
 		shellQuote(strings.TrimRight(h.CentralURL, "/")),
 		shellQuote(h.TokenFile),
 		shellQuote(h.BuildID),
+		shellQuote(h.Version),
 		shellQuote(h.Scope),
 		shellQuote(fmt.Sprintf("%t", h.UseSudo)),
 		shellQuote(h.LockPath),

@@ -1,11 +1,12 @@
 import type { Agent } from "@prisma/client";
-import type { FastifyReply, FastifyRequest } from "fastify";
+import type { preHandlerHookHandler } from "fastify/types/hooks.js";
 import {
   hashToken,
   isLegacySha256Hash,
   prisma,
   sha256Hex,
 } from "@fleet/db";
+import { checkOptionalAgentMtls } from "./agent-mtls.js";
 
 export type AgentRequestContext = {
   agentId: string;
@@ -38,7 +39,7 @@ export async function resolveAgentCredential(token: string) {
   return cred;
 }
 
-export async function requireAgent(req: FastifyRequest, reply: FastifyReply) {
+export const requireAgent: preHandlerHookHandler = async (req, reply) => {
   const auth = req.headers.authorization;
   if (!auth?.startsWith("Bearer ")) {
     return reply.code(401).send({ error: "missing_token" });
@@ -52,4 +53,6 @@ export async function requireAgent(req: FastifyRequest, reply: FastifyReply) {
     return reply.code(401).send({ error: "invalid_token" });
   }
   req.agentCtx = { agentId: cred.agentId, agent: cred.agent };
-}
+  await checkOptionalAgentMtls(req, reply);
+  if (reply.sent) return;
+};

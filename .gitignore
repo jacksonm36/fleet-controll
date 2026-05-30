@@ -11,6 +11,8 @@ coverage
 *.exe
 /agent/agent
 /agent/bin/
+data/binary-deploy-sessions.json
+data/binary-deploy-sessions.json.*.tmp
 *.deb
 
 # Local / lab debug captures (not for publication)

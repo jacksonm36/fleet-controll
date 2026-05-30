@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
-import type { FastifyRequest } from "fastify";
+import type { AppRequest } from "../types/app-instance.js";
 import { fleetAutoEncrypt, fleetPublicHost, fleetRequireTls } from "./env.js";
 
-function hostFromRequest(req: FastifyRequest): string {
+function hostFromRequest(req: AppRequest): string {
   const override = fleetPublicHost();
   if (override) return override;
 
@@ -14,7 +14,7 @@ function hostFromRequest(req: FastifyRequest): string {
   return hostHeader.replace(/:\d+$/, "");
 }
 
-function requestIsHttps(req: FastifyRequest): boolean {
+function requestIsHttps(req: AppRequest): boolean {
   if (req.protocol === "https") return true;
   const xf = req.headers["x-forwarded-proto"];
   const raw = Array.isArray(xf) ? xf[0] : xf;
@@ -23,7 +23,7 @@ function requestIsHttps(req: FastifyRequest): boolean {
 
 /** Canonical public HTTPS URL for agents/UI (env, then TLS flags, then request). */
 export function fleetHttpsPublicUrl(
-  req: FastifyRequest,
+  req: AppRequest,
   apiPort: number,
 ): string | null {
   const envUrl = process.env.FLEET_PUBLIC_URL?.trim().replace(/\/$/, "");
@@ -47,7 +47,7 @@ export function fleetHttpsPublicUrl(
 
 /** Public URL for install scripts and UI (HTTPS via nginx on 443 when auto-encrypt). */
 export function securePublicBase(
-  req: FastifyRequest,
+  req: AppRequest,
   apiPort: number,
 ): string {
   const httpsUrl = fleetHttpsPublicUrl(req, apiPort);
@@ -69,7 +69,7 @@ export function securePublicBase(
 
 /** Agent API base URL (HTTPS, same host as UI when TLS terminates on 443). */
 export function secureCentralApiUrl(
-  req: FastifyRequest,
+  req: AppRequest,
   apiPort: number,
 ): string {
   const base = securePublicBase(req, apiPort);
@@ -110,7 +110,7 @@ export function fleetTlsProxy(): string {
 }
 
 export function fleetCaDownloadUrl(
-  req: FastifyRequest,
+  req: AppRequest,
   apiPort: number,
 ): string | null {
   if (!fleetCaCertPath()) return null;

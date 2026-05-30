@@ -1,12 +1,14 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Shell } from "@/components/Shell";
 import { AuthLoadingShell } from "@/components/AuthLoadingShell";
 import { apiFetch } from "@/lib/api";
 import { usePolling } from "@/lib/usePolling";
 import { useSession } from "@/lib/useSession";
+import { OsInfo } from "@/components/OsInfo";
 
 type ObsConfig = {
   influxConfigured: boolean;
@@ -45,6 +47,8 @@ type HostMetrics = {
   id: string;
   hostname: string;
   osType: string;
+  osDetail?: string | null;
+  primaryIp?: string | null;
   online: boolean;
   metricsStale: boolean;
   lastSeenAt: string | null;
@@ -162,7 +166,7 @@ export default function MonitoringPage() {
   usePolling(() => {
     if (!hydrated || !authed) return;
     void reload();
-  }, 8_000, false);
+  }, 5_000, false);
 
   const summary = useMemo(() => {
     const online = hosts.filter((h) => h.online).length;
@@ -212,7 +216,7 @@ export default function MonitoringPage() {
             <h1 className="text-2xl font-semibold">Monitoring</h1>
             <p className="mt-1 max-w-2xl text-sm text-white/60">
               Live host metrics from enrolled agents (every{" "}
-              {config?.metricsIntervalSec ?? 30}s). Historical charts and logs in
+              {config?.metricsIntervalSec ?? 5}s). Historical charts and logs in
               Grafana / Loki.
               {lastRefresh ? (
                 <span className="text-white/40">
@@ -348,49 +352,7 @@ export default function MonitoringPage() {
               </thead>
               <tbody>
                 {hosts.map((h) => (
-                  <tr key={h.id} className="border-t border-white/5">
-                    <td className="px-3 py-2">
-                      <Link
-                        href={`/monitoring/${h.id}`}
-                        className="font-medium text-[hsl(var(--accent))] hover:underline"
-                      >
-                        {h.hostname}
-                      </Link>
-                    </td>
-                    <td className="px-3 py-2 text-xs">
-                      {!h.online ? (
-                        <span className="text-white/40">offline</span>
-                      ) : h.metricsStale ? (
-                        <span className="text-amber-300">stale</span>
-                      ) : (
-                        <span className="text-emerald-400">live</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2">{fmtPct(h.cpuPercent)}</td>
-                    <td className="px-3 py-2">{fmtPct(h.memUsedPercent)}</td>
-                    <td className="px-3 py-2 text-xs whitespace-nowrap">
-                      ↓ {fmtBps(h.networkRxBps)} · ↑ {fmtBps(h.networkTxBps)}
-                    </td>
-                    <td className="px-3 py-2">{h.loggedInUsers ?? "—"}</td>
-                    <td className="px-3 py-2">
-                      <span
-                        className={`rounded px-1.5 py-0.5 text-xs ${healthClass(h.healthStatus)}`}
-                      >
-                        {h.healthScore ?? "—"}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2">
-                      {h.load1 != null ? h.load1.toFixed(2) : "—"}
-                    </td>
-                    <td className="px-3 py-2">
-                      {h.diskRootUsedPercent != null
-                        ? `${h.diskRootUsedPercent.toFixed(0)}%`
-                        : "—"}
-                    </td>
-                    <td className="px-3 py-2 text-xs text-white/50">
-                      {fmtTime(h.lastMetricsAt)}
-                    </td>
-                  </tr>
+                  <HostTableRow key={h.id} host={h} />
                 ))}
               </tbody>
             </table>
@@ -490,17 +452,89 @@ function HealthPill({
   );
 }
 
+function hostDetailHref(id: string, tab?: "metrics" | "logs") {
+  const base = `/monitoring/${id}`;
+  return tab ? `${base}?tab=${tab}` : base;
+}
+
+function HostTableRow({ host: h }: { host: HostMetrics }) {
+  const router = useRouter();
+  const go = () => router.push(hostDetailHref(h.id));
+
+  return (
+    <tr
+      role="link"
+      tabIndex={0}
+      title={`Open metrics for ${h.hostname}`}
+      onClick={go}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          go();
+        }
+      }}
+      className="cursor-pointer border-t border-white/5 hover:bg-white/[0.04] focus-visible:bg-white/[0.06] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[hsl(var(--accent))]/50"
+    >
+      <td className="px-3 py-2">
+        <span className="font-medium text-[hsl(var(--accent))]">
+          {h.hostname}
+        </span>
+        {h.primaryIp ? (
+          <div className="text-[10px] text-white/35">{h.primaryIp}</div>
+        ) : null}
+      </td>
+      <td className="px-3 py-2 text-xs">
+        {!h.online ? (
+          <span className="text-white/40">offline</span>
+        ) : h.metricsStale ? (
+          <span className="text-amber-300">stale</span>
+        ) : (
+          <span className="text-emerald-400">live</span>
+        )}
+      </td>
+      <td className="px-3 py-2">{fmtPct(h.cpuPercent)}</td>
+      <td className="px-3 py-2">{fmtPct(h.memUsedPercent)}</td>
+      <td className="px-3 py-2 text-xs whitespace-nowrap">
+        ↓ {fmtBps(h.networkRxBps)} · ↑ {fmtBps(h.networkTxBps)}
+      </td>
+      <td className="px-3 py-2">{h.loggedInUsers ?? "—"}</td>
+      <td className="px-3 py-2">
+        <span
+          className={`rounded px-1.5 py-0.5 text-xs ${healthClass(h.healthStatus)}`}
+        >
+          {h.healthScore ?? "—"}
+        </span>
+      </td>
+      <td className="px-3 py-2">
+        {h.load1 != null ? h.load1.toFixed(2) : "—"}
+      </td>
+      <td className="px-3 py-2">
+        {h.diskRootUsedPercent != null
+          ? `${h.diskRootUsedPercent.toFixed(0)}%`
+          : "—"}
+      </td>
+      <td className="px-3 py-2 text-xs text-white/50">
+        {fmtTime(h.lastMetricsAt)}
+      </td>
+    </tr>
+  );
+}
+
 function HostCard({ host: h }: { host: HostMetrics }) {
   return (
     <Link
-      href={`/monitoring/${h.id}`}
-      className="block rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 transition hover:border-[hsl(var(--accent))]/40 hover:bg-white/[0.02]"
+      href={hostDetailHref(h.id)}
+      title={`View all stats for ${h.hostname}`}
+      className="group block cursor-pointer rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 transition hover:border-[hsl(var(--accent))]/50 hover:bg-white/[0.03] hover:shadow-md hover:shadow-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--accent))]/60"
     >
       <div className="flex items-start justify-between gap-2">
         <div>
-          <div className="font-semibold text-[hsl(var(--accent))]">{h.hostname}</div>
+          <div className="font-semibold text-[hsl(var(--accent))] underline-offset-2 group-hover:underline">
+            {h.hostname}
+          </div>
           <div className="text-xs text-white/40">
-            {h.osType}
+            <OsInfo osType={h.osType} osDetail={h.osDetail} variant="compact" />
+            {h.primaryIp ? ` · ${h.primaryIp}` : ""}
             {h.lastMetricsAt ? ` · metrics ${fmtTime(h.lastMetricsAt)}` : ""}
           </div>
         </div>
@@ -571,6 +605,13 @@ function HostCard({ host: h }: { host: HostMetrics }) {
           ) : null}
         </div>
       )}
+
+      <div className="mt-3 flex items-center justify-between border-t border-white/10 pt-2 text-xs text-white/45">
+        <span className="group-hover:text-[hsl(var(--accent))]">
+          View all stats →
+        </span>
+        <span className="opacity-0 transition group-hover:opacity-100">↗</span>
+      </div>
     </Link>
   );
 }

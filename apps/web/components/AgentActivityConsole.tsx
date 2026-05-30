@@ -46,7 +46,7 @@ export function AgentActivityConsole({
   compact?: boolean;
 }) {
   const step = patchWorkflowStep(activePlan, patchPlans);
-  const autoJobId = liveJobIdForPlan(activePlan, patchPlans);
+  const autoJobId = liveJobIdForPlan(activePlan, patchPlans, jobs);
   const streamJobId = selectedJobId ?? autoJobId;
 
   const jobOptions = useMemo(() => {
@@ -80,11 +80,17 @@ export function AgentActivityConsole({
               className="mt-1 block rounded-md border border-white/15 bg-black/40 px-2 py-1 text-xs text-white"
             >
               <option value="">Auto (current task)</option>
-              {jobOptions.map((jid) => (
-                <option key={jid} value={jid}>
-                  {jid.slice(0, 10)}…
-                </option>
-              ))}
+              {jobOptions.map((jid) => {
+                const row = jobs.find((j) => j.id === jid);
+                const label = row
+                  ? `${row.type.replace(/_/g, " ")} · ${row.status}`
+                  : jid.slice(0, 10);
+                return (
+                  <option key={jid} value={jid}>
+                    {label}
+                  </option>
+                );
+              })}
             </select>
           </label>
         ) : null}

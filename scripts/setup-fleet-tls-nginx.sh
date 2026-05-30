@@ -53,6 +53,10 @@ chmod 644 "$CA_EXPORT"
 
 export FLEET_DOMAIN
 envsubst '$FLEET_DOMAIN' <"$ROOT/deploy/nginx/fleet.conf" >/etc/nginx/sites-available/fleet.conf
+# Harmless placeholder until setup-fleet-mtls-ca.sh enables optional client certs.
+if [[ ! -f /etc/nginx/fleet-mtls.conf ]]; then
+	cp -f "$ROOT/deploy/nginx/fleet-mtls.conf" /etc/nginx/fleet-mtls.conf
+fi
 ln -sf /etc/nginx/sites-available/fleet.conf /etc/nginx/sites-enabled/fleet.conf
 rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
 
@@ -85,6 +89,7 @@ if [[ -f "$ENV_FILE" ]]; then
 	set_kv SESSION_COOKIE_SECURE 1
 	set_kv FLEET_CA_CERT_PATH "$CA_EXPORT"
 	set_kv FLEET_TLS_PROXY nginx
+	set_kv FLEET_TLS_PIN_AUTO 1
 	mkdir -p "$ROOT/apps/web"
 	cat >"$ROOT/apps/web/.env.local" <<WEBENV
 NEXT_PUBLIC_API_URL=${HTTPS_BASE}

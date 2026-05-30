@@ -96,14 +96,23 @@ main() {
   echo "Downloading: $url"
   install_fleet_agent_binary "$url" "$prefix/fleet-agent"
 
-  if strings "$prefix/fleet-agent" 2>/dev/null | grep -q pushMetrics; then
-    echo "Binary includes metrics collector."
+  if installed_ver="$("$prefix/fleet-agent" -version 2>/dev/null)" && [[ -n "$installed_ver" ]]; then
+    echo "Installed agent version: ${installed_ver}"
+    if installed_build="$("$prefix/fleet-agent" -build 2>/dev/null)" && [[ -n "$installed_build" ]]; then
+      echo "Installed agent build: ${installed_build}"
+    fi
+  elif strings "$prefix/fleet-agent" 2>/dev/null | grep -qE 'fleet-agent starting|self-heal:'; then
+    echo "Installed agent binary (current generation)."
   else
-    echo "Warning: binary may be too old (no metrics). Rebuild on controller: cd agent && go build -o bin/$asset ./cmd/agent" >&2
+    echo "Warning: installed binary may be outdated. On controller run: bash scripts/rebuild-fleet-agent.sh" >&2
   fi
 
   start_fleet_agent
-  echo "Done. Metrics should appear on the controller Monitoring page within ~30s."
+  echo "=== Fleet agent binary upgrade finished successfully ==="
+  if command -v logger >/dev/null 2>&1; then
+    logger -t fleet-agent-upgrade "Manual upgrade script finished successfully"
+  fi
+  echo "Done. Check logs: journalctl -u fleet-agent.service -n 30 --no-pager"
 }
 
 main "$@"

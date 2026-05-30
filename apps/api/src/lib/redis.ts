@@ -1,6 +1,6 @@
-import Redis from "ioredis";
+import { Redis, type Redis as RedisClient } from "ioredis";
 
-let client: Redis | null = null;
+let client: RedisClient | null = null;
 let connectAttempted = false;
 
 export function resolveRedisUrl(): string | null {
@@ -8,7 +8,7 @@ export function resolveRedisUrl(): string | null {
   return url && url.length > 0 ? url : null;
 }
 
-export function getRedis(): Redis | null {
+export function getRedis(): RedisClient | null {
   const url = resolveRedisUrl();
   if (!url) return null;
   if (!client) {
@@ -30,7 +30,7 @@ export async function ensureRedisConnected(): Promise<boolean> {
   if (redis.status === "ready") return true;
   if (connectAttempted && redis.status === "connecting") {
     await new Promise((r) => setTimeout(r, 50));
-    return redis.status === "ready";
+    return getRedis()?.status === "ready";
   }
   connectAttempted = true;
   try {

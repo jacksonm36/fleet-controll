@@ -2,7 +2,7 @@ import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import jwt from "@fastify/jwt";
 import websocket from "@fastify/websocket";
-import type { FastifyInstance } from "fastify";
+import type { AppInstance } from "../types/app-instance.js";
 import { resolveCorsOrigins, resolveJwtSecret } from "../lib/env.js";
 import { requireAgentTls } from "../middleware/require-tls.js";
 import { SESSION_COOKIE } from "../lib/session.js";
@@ -26,7 +26,7 @@ import { observabilityRoutes } from "./observability.js";
 import { patchPlansRoutes } from "./patch-plans.js";
 import { scriptsRoutes } from "./scripts.js";
 
-export async function registerRoutes(app: FastifyInstance) {
+export async function registerRoutes(app: AppInstance) {
   app.get("/health", async () => {
     const { redisPing } = await import("../lib/redis.js");
     const redis = await redisPing();
@@ -67,7 +67,7 @@ export async function registerRoutes(app: FastifyInstance) {
   );
 }
 
-export async function registerPlugins(app: FastifyInstance) {
+export async function registerPlugins(app: AppInstance) {
   await registerSecurityPlugins(app);
 
   // Allow DELETE/GET with Content-Type: application/json and no body (browser clients).

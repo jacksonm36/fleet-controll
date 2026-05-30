@@ -81,36 +81,75 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 TOKEN_FILE="${FLEET_AGENT_TOKEN_FILE:-$HOME/.fleet-agent.token}"
-HOST="${HOSTNAME_OVERRIDE:-$(hostname)}"
+HOST="$(printf '%s' "${HOSTNAME_OVERRIDE:-$(hostname -s 2>/dev/null || hostname)}")"
+HOST="${HOST//$'\r'/}"
+HOST="${HOST//$'\n'/}"
+HOST="${HOST#"${HOST%%[![:space:]]*}"}"
+HOST="${HOST%"${HOST##*[![:space:]]}"}"
 
 export _ENROLL_PAIRING="$PLAIN"
 export _ENROLL_HOST="$HOST"
+export _FLEET_HOSTNAME="${FLEET_HOSTNAME:-}"
 BODY=$(python3 - <<'PY'
 import json
 import os
+import re
 from pathlib import Path
 
+HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+MAX_OS_DETAIL = 512
+MAX_HOST = 128
+
+
+def normalize_hostname(raw: str) -> str:
+    h = (raw or "").strip().rstrip(".")
+    if not h:
+        h = "fleet-host"
+    if len(h) > MAX_HOST:
+        h = h[:MAX_HOST]
+    if HOST_RE.match(h):
+        return h
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", h).strip("-._")
+    if not cleaned or not cleaned[0].isalnum():
+        cleaned = f"fleet-host-{cleaned or 'node'}"
+    cleaned = cleaned[:MAX_HOST]
+    if HOST_RE.match(cleaned):
+        return cleaned
+    return "fleet-host"
+
+
 os_detail = ""
+os_type = "linux"
 try:
     os_detail = Path("/etc/os-release").read_text(encoding="utf-8", errors="replace").strip()
+    if not os_detail and Path("/usr/lib/os-release").exists():
+        os_detail = Path("/usr/lib/os-release").read_text(encoding="utf-8", errors="replace").strip()
 except OSError:
-    os_detail = os.uname().sysname.lower()
+    pass
+if not os_detail:
+    u = os.uname()
+    os_detail = f"NAME={u.sysname}\nPRETTY_NAME={u.sysname} {u.release}\nVERSION_ID={u.release}\nID=linux"
+    os_type = u.sysname.lower() if u.sysname.lower() in ("linux", "freebsd", "openbsd", "netbsd") else "linux"
+if len(os_detail) > MAX_OS_DETAIL:
+    os_detail = os_detail[:MAX_OS_DETAIL]
 
-print(
-    json.dumps(
-        {
-            "token": os.environ["_ENROLL_PAIRING"],
-            "hostname": os.environ["_ENROLL_HOST"],
-            "osType": "linux",
-            "osDetail": os_detail,
-            "version": os.environ.get("FLEET_AGENT_VERSION", "0.3.0-go"),
-        }
-    )
-)
+host = normalize_hostname(os.environ.get("_ENROLL_HOST", ""))
+payload = {
+    "token": os.environ["_ENROLL_PAIRING"],
+    "hostname": host,
+    "osType": os_type,
+    "osDetail": os_detail,
+    "version": os.environ.get("FLEET_AGENT_VERSION", "0.3.0-go")[:64],
+}
+fleet = os.environ.get("_FLEET_HOSTNAME", "").strip()
+if fleet:
+    payload["fleetHostname"] = normalize_hostname(fleet)
+
+print(json.dumps(payload))
 PY
 )
 
-unset _ENROLL_PAIRING _ENROLL_HOST
+unset _ENROLL_PAIRING _ENROLL_HOST _FLEET_HOSTNAME
 
 URL="${CENTRAL}/api/agent/v1/enroll"
 HTTP_CODE=$(curl -sS "${FLEET_CURL_TLS_ARGS[@]}" -o /tmp/fleet-enroll-resp.json -w '%{http_code}' \
@@ -120,7 +159,15 @@ rm -f /tmp/fleet-enroll-resp.json
 
 if [[ "$HTTP_CODE" != "200" ]]; then
 	echo >&2 "enroll failed HTTP $HTTP_CODE — ${RESP_BODY:-empty}"
-	if [[ "$RESP_BODY" == *"invalid_or_expired_token"* ]]; then
+	if [[ "$RESP_BODY" == *"invalid_body"* ]]; then
+		echo >&2 "Request rejected (hostname/osDetail). Try: HOSTNAME_OVERRIDE=my-mail-host $0 …" >&2
+		echo >&2 "  hostname sent: ${HOST:-unknown}" >&2
+	elif [[ "$HTTP_CODE" == "409" ]]; then
+		echo >&2 "Enrollment conflict — token was NOT consumed. Fix the issue below, then retry with the same token." >&2
+		if [[ "$RESP_BODY" == *"agent_ip_conflict"* ]] || [[ "$RESP_BODY" == *"already"* ]]; then
+			echo >&2 "  Set FLEET_HOSTNAME to the name shown in Fleet → Agents, or delete the stale agent." >&2
+		fi
+	elif [[ "$RESP_BODY" == *"invalid_or_expired_token"* ]]; then
 		echo >&2 "Token already used or wrong. Mint a NEW token in Fleet → Enrollment." >&2
 	elif [[ "$RESP_BODY" == *"tls_required"* ]]; then
 		echo >&2 "Controller requires HTTPS. Use https:// in FLEET_CENTRAL_URL or run: sudo bash scripts/setup-fleet-tls-nginx.sh" >&2

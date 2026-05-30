@@ -3,7 +3,7 @@ import {
   prisma,
 } from "@fleet/db";
 import type { Role } from "@prisma/client";
-import type { FastifyInstance } from "fastify";
+import type { AppInstance } from "../types/app-instance.js";
 import { z } from "zod";
 import { validateNewPassword } from "../lib/password-policy.js";
 import {
@@ -31,7 +31,11 @@ const updateUserSchema = z.object({
   password: z.string().min(1).optional(),
 });
 
-async function audit(actorId: string, action: string, meta?: Record<string, unknown>) {
+async function audit(
+  actorId: string,
+  action: string,
+  meta?: import("@prisma/client").Prisma.InputJsonValue,
+) {
   await prisma.auditEvent.create({
     data: { actorId, action, meta: meta ?? {} },
   });
@@ -41,7 +45,7 @@ async function adminCount(): Promise<number> {
   return prisma.user.count({ where: { role: "ADMIN", disabled: false } });
 }
 
-export async function usersRoutes(app: FastifyInstance) {
+export async function usersRoutes(app: AppInstance) {
   app.get("/", { preHandler: requireUser }, async (req, reply) => {
     if (!assertAdmin(req, reply)) return;
     const users = await prisma.user.findMany({

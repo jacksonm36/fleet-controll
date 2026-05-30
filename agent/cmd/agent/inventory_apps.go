@@ -12,7 +12,13 @@ import (
 func collectPackagesLinux(sudo bool) []map[string]any {
 	var rows []map[string]any
 	rows = append(rows, collectDpkgPackages()...)
-	rows = append(rows, collectRpmPackages()...)
+	if !zypperPresent() {
+		rows = append(rows, collectRpmPackages()...)
+	}
+	rows = append(rows, collectZypperPackages()...)
+	rows = append(rows, collectPacmanPackages()...)
+	rows = append(rows, collectApkPackages()...)
+	rows = append(rows, collectEmergePackages()...)
 	rows = append(rows, collectSnapPackages()...)
 	rows = append(rows, collectFlatpakPackages()...)
 	rows = append(rows, collectDockerImages()...)
@@ -270,8 +276,13 @@ func collectRuntimeContainers(runtime string, sudo bool) []map[string]any {
 	return rows
 }
 
-// collectServicesLinuxImproved uses unit-files + list-units for accurate enabled/active state.
+// collectServicesLinuxImproved prefers systemctl show (Type/Active/Sub); list-units is fallback.
 func collectServicesLinuxImproved(sudo bool) []map[string]any {
+	if rows := collectSystemdServices(sudo); len(rows) > 0 {
+		rows = append(rows, collectSnapServices()...)
+		return dedupeServices(rows)
+	}
+
 	enabled := map[string]string{}
 	if rows := systemctlOutput(sudo, "list-unit-files", "--type=service", "--no-pager", "--no-legend"); rows != nil {
 		for _, line := range strings.Split(string(rows), "\n") {
@@ -306,13 +317,14 @@ func collectServicesLinuxImproved(sudo bool) []map[string]any {
 			continue
 		}
 		name := fields[0]
+		// list-units columns: UNIT LOAD ACTIVE SUB [DESCRIPTION...]
 		active := "unknown"
 		sub := ""
-		if len(fields) >= 4 {
-			active = fields[3]
+		if len(fields) >= 3 {
+			active = fields[2]
 		}
-		if len(fields) >= 5 {
-			sub = fields[4]
+		if len(fields) >= 4 {
+			sub = fields[3]
 		}
 		unitFile := enabled[name]
 		detail := sub
@@ -454,15 +466,23 @@ func collectServicesLinux(sudo bool) []map[string]any {
 		}
 		name := fields[0]
 		state := "unknown"
-		if len(fields) >= 4 {
-			state = fields[3]
+		sub := ""
+		if len(fields) >= 3 {
+			state = fields[2]
 		}
-		rows = append(rows, map[string]any{
+		if len(fields) >= 4 {
+			sub = fields[3]
+		}
+		row := map[string]any{
 			"name":    name,
 			"kind":    "systemd",
 			"state":   state,
 			"enabled": strings.Contains(strings.ToLower(line), "enabled"),
-		})
+		}
+		if sub != "" {
+			row["detail"] = sub
+		}
+		rows = append(rows, row)
 		if len(rows) >= 400 {
 			break
 		}

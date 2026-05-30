@@ -1,35 +1,95 @@
 import { prisma } from "@fleet/db";
-import type { FastifyInstance } from "fastify";
+import type { AppInstance } from "../types/app-instance.js";
 import { z } from "zod";
+import { isAgentOnline } from "../lib/agent-presence.js";
 import { cacheWrap, invalidateFleetCaches } from "../lib/cache.js";
+import {
+  buildCrowdSecStatus,
+  countCrowdSecDecisions,
+  flattenCrowdSecDecisions,
+  parseCrowdSecAlert,
+  parseCrowdSecDecision,
+  summarizeCrowdSecPayload,
+} from "../lib/crowdsec-parse.js";
+
+function asArray(v: unknown): unknown[] {
+  return Array.isArray(v) ? v : [];
+}
 import { notifyAgent } from "../lib/agent-sockets.js";
 import { assertOperator, requireUser } from "../middleware/auth.js";
 
-export async function crowdsecRoutes(app: FastifyInstance) {
+export async function crowdsecRoutes(app: AppInstance) {
   app.get(
     "/status",
     { preHandler: requireUser },
     async (_req, reply) => {
       const { data, meta } = await cacheWrap("crowdsec:status", 15, async () => {
-        const snaps = await prisma.crowdSecSnapshot.findMany({
-          include: { agent: { select: { id: true, hostname: true } } },
+        const now = Date.now();
+        const [snaps, enrolledAgents, allAgents] = await Promise.all([
+          prisma.crowdSecSnapshot.findMany({
+            select: { payload: true },
+          }),
+          prisma.agent.count(),
+          prisma.agent.findMany({
+            select: { lastSeenAt: true, status: true },
+          }),
+        ]);
+        return buildCrowdSecStatus(
+          snaps,
+          allAgents.map((a) => ({
+            online: isAgentOnline(a.lastSeenAt, a.status, now),
+          })),
+          enrolledAgents,
+        );
+      });
+      if (meta.redis) reply.header("X-Cache", meta.hit ? "HIT" : "MISS");
+      return data;
+    },
+  );
+
+  app.get(
+    "/agents",
+    { preHandler: requireUser },
+    async (_req, reply) => {
+      const { data, meta } = await cacheWrap("crowdsec:agents", 15, async () => {
+        const now = Date.now();
+        const agents = await prisma.agent.findMany({
+          orderBy: { hostname: "asc" },
+          select: {
+            id: true,
+            hostname: true,
+            osType: true,
+            osDetail: true,
+            status: true,
+            lastSeenAt: true,
+            crowdsecInstalled: true,
+            crowdSecSnapshots: {
+              select: { payload: true, capturedAt: true },
+            },
+          },
         });
-        let healthyHosts = 0;
-        let alertTotal = 0;
-        let decisionTotal = 0;
-        for (const s of snaps) {
-          const p = s.payload as Record<string, unknown>;
-          if (p.healthy === true) healthyHosts++;
-          const alerts = p.alerts as unknown[] | undefined;
-          const decisions = p.decisions as unknown[] | undefined;
-          alertTotal += alerts?.length ?? 0;
-          decisionTotal += decisions?.length ?? 0;
-        }
+
+        const rows = agents.map((a) => {
+          const snap = a.crowdSecSnapshots[0] ?? null;
+          return summarizeCrowdSecPayload(snap?.payload, {
+            agentId: a.id,
+            hostname: a.hostname,
+            osType: a.osType,
+            osDetail: a.osDetail,
+            online: isAgentOnline(a.lastSeenAt, a.status, now),
+            crowdsecInstalled: a.crowdsecInstalled,
+            capturedAt: snap?.capturedAt ?? null,
+            lastSeenAt: a.lastSeenAt,
+          });
+        });
+
+        const reporting = rows.filter((r) => r.reporting);
+        const notReporting = rows.filter((r) => !r.reporting);
+
         return {
-          snapshotHosts: snaps.length,
-          healthyHosts,
-          alertTotal,
-          decisionTotal,
+          agents: rows,
+          reportingCount: reporting.length,
+          notReportingCount: notReporting.length,
         };
       });
       if (meta.redis) reply.header("X-Cache", meta.hit ? "HIT" : "MISS");
@@ -40,29 +100,46 @@ export async function crowdsecRoutes(app: FastifyInstance) {
   app.get(
     "/alerts",
     { preHandler: requireUser },
-    async (_req, reply) => {
-      const { data, meta } = await cacheWrap("crowdsec:alerts", 30, async () => {
-        const snaps = await prisma.crowdSecSnapshot.findMany({
-          include: { agent: { select: { id: true, hostname: true } } },
-        });
-        const rows: Record<string, unknown>[] = [];
-        for (const s of snaps) {
-          const p = s.payload as Record<string, unknown>;
-          const alerts = (p.alerts as Record<string, unknown>[]) ?? [];
-          for (const a of alerts) {
-            rows.push({
-              agentId: s.agentId,
-              hostname: s.agent.hostname,
-              capturedAt: s.capturedAt,
-              alert: a,
-            });
+    async (req, reply) => {
+      const hostFilter = String((req.query as { host?: string }).host ?? "")
+        .trim()
+        .toLowerCase();
+
+      const { data, meta } = await cacheWrap(
+        hostFilter ? `crowdsec:alerts:${hostFilter}` : "crowdsec:alerts",
+        30,
+        async () => {
+          const snaps = await prisma.crowdSecSnapshot.findMany({
+            include: { agent: { select: { id: true, hostname: true } } },
+          });
+          const rows = [];
+          for (const s of snaps) {
+            if (
+              hostFilter &&
+              !s.agent.hostname.toLowerCase().includes(hostFilter)
+            ) {
+              continue;
+            }
+            const p = s.payload as Record<string, unknown>;
+            const alerts = (p.alerts as unknown[]) ?? [];
+            for (const a of alerts) {
+              rows.push(
+                parseCrowdSecAlert(a, {
+                  agentId: s.agentId,
+                  hostname: s.agent.hostname,
+                  capturedAt: s.capturedAt,
+                }),
+              );
+            }
           }
-        }
-        rows.sort((a, b) =>
-          String(b.capturedAt).localeCompare(String(a.capturedAt)),
-        );
-        return rows.slice(0, 500);
-      });
+          rows.sort((a, b) => {
+            const ta = a.alertAt ?? a.capturedAt;
+            const tb = b.alertAt ?? b.capturedAt;
+            return tb.localeCompare(ta);
+          });
+          return rows.slice(0, 500);
+        },
+      );
       if (meta.redis) reply.header("X-Cache", meta.hit ? "HIT" : "MISS");
       return data;
     },
@@ -71,27 +148,41 @@ export async function crowdsecRoutes(app: FastifyInstance) {
   app.get(
     "/decisions",
     { preHandler: requireUser },
-    async (_req, reply) => {
-      const { data, meta } = await cacheWrap("crowdsec:decisions", 30, async () => {
-        const snaps = await prisma.crowdSecSnapshot.findMany({
-          include: { agent: { select: { id: true, hostname: true } } },
-        });
-        const rows: Record<string, unknown>[] = [];
-        for (const s of snaps) {
-          const p = s.payload as Record<string, unknown>;
-          const decisions =
-            (p.decisions as Record<string, unknown>[]) ?? [];
-          for (const d of decisions) {
-            rows.push({
-              agentId: s.agentId,
-              hostname: s.agent.hostname,
-              capturedAt: s.capturedAt,
-              decision: d,
-            });
+    async (req, reply) => {
+      const hostFilter = String((req.query as { host?: string }).host ?? "")
+        .trim()
+        .toLowerCase();
+
+      const { data, meta } = await cacheWrap(
+        hostFilter ? `crowdsec:decisions:${hostFilter}` : "crowdsec:decisions",
+        30,
+        async () => {
+          const snaps = await prisma.crowdSecSnapshot.findMany({
+            include: { agent: { select: { id: true, hostname: true } } },
+          });
+          const rows = [];
+          for (const s of snaps) {
+            if (
+              hostFilter &&
+              !s.agent.hostname.toLowerCase().includes(hostFilter)
+            ) {
+              continue;
+            }
+            const p = s.payload as Record<string, unknown>;
+            const decisions = flattenCrowdSecDecisions(p.decisions);
+            for (const d of decisions) {
+              rows.push(
+                parseCrowdSecDecision(d, {
+                  agentId: s.agentId,
+                  hostname: s.agent.hostname,
+                  capturedAt: s.capturedAt,
+                }),
+              );
+            }
           }
-        }
-        return rows.slice(0, 500);
-      });
+          return rows.slice(0, 500);
+        },
+      );
       if (meta.redis) reply.header("X-Cache", meta.hit ? "HIT" : "MISS");
       return data;
     },

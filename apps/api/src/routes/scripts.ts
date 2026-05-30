@@ -1,6 +1,6 @@
 import { prisma } from "@fleet/db";
-import type { AutomationTool, JobType } from "@prisma/client";
-import type { FastifyInstance } from "fastify";
+import type { AutomationTool, JobType, Prisma } from "@prisma/client";
+import type { AppInstance } from "../types/app-instance.js";
 import { z } from "zod";
 
 import {
@@ -38,7 +38,7 @@ const runScriptSchema = z.object({
   payload: z.record(z.unknown()).optional(),
 });
 
-export async function scriptsRoutes(app: FastifyInstance) {
+export async function scriptsRoutes(app: AppInstance) {
   app.get("/", { preHandler: requireUser }, async () => {
     return prisma.automationScript.findMany({
       orderBy: { updatedAt: "desc" },
@@ -64,7 +64,13 @@ export async function scriptsRoutes(app: FastifyInstance) {
 
     const script = await prisma.automationScript.create({
       data: {
-        ...parsed.data,
+        name: parsed.data.name,
+        description: parsed.data.description,
+        tool: parsed.data.tool,
+        content: parsed.data.content,
+        defaultPayload: parsed.data.defaultPayload as
+          | Prisma.InputJsonValue
+          | undefined,
         tags: parsed.data.tags ?? [],
         createdBy: (req.user as { sub: string }).sub,
       },
@@ -92,9 +98,15 @@ export async function scriptsRoutes(app: FastifyInstance) {
       });
       if (!existing) return reply.code(404).send({ error: "not_found" });
 
+      const { defaultPayload, ...rest } = parsed.data;
       const script = await prisma.automationScript.update({
         where: { id: req.params.id },
-        data: parsed.data,
+        data: {
+          ...rest,
+          ...(defaultPayload !== undefined
+            ? { defaultPayload: defaultPayload as Prisma.InputJsonValue }
+            : {}),
+        },
       });
       return script;
     },
@@ -149,7 +161,7 @@ export async function scriptsRoutes(app: FastifyInstance) {
         data: {
           agentId: agent.id,
           type: jobType,
-          payload,
+          payload: payload as Prisma.InputJsonValue,
           status: "QUEUED",
         },
       });
@@ -195,7 +207,7 @@ export async function scriptsRoutes(app: FastifyInstance) {
       data: {
         agentId: agent.id,
         type: parsed.data.type as JobType,
-        payload: parsed.data.payload,
+        payload: parsed.data.payload as Prisma.InputJsonValue,
         status: "QUEUED",
       },
     });

@@ -44,6 +44,38 @@ fleet_ensure_ca_file() {
 	export FLEET_CA_FILE="$dest"
 }
 
+# Download SHA-512 SPKI pin from controller (non-fatal if unavailable).
+fleet_fetch_tls_pin() {
+	local central="${1%/}"
+	case "${FLEET_TLS_PIN_AUTO:-1}" in
+	0 | false | no | off) return 0 ;;
+	esac
+	if [[ -n "${FLEET_TLS_PIN:-}" ]]; then
+		return 0
+	fi
+	local pin_url="${central}/api/public/tls-pin.json"
+	local pin=""
+	if declare -F fleet_curl_tls_args >/dev/null 2>&1; then
+		fleet_curl_tls_args
+	else
+		FLEET_CURL_TLS_ARGS=()
+	fi
+	local json
+	if ! json="$(curl -fsSL "${FLEET_CURL_TLS_ARGS[@]}" --max-time 20 "$pin_url" 2>/dev/null)"; then
+		return 0
+	fi
+	if command -v python3 >/dev/null 2>&1; then
+		pin="$(printf '%s' "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('fleetTlsPin') or '')" 2>/dev/null || true)"
+	fi
+	[[ -n "$pin" ]] || return 0
+	export FLEET_TLS_PIN="$pin"
+	local dest="${HOME}/.fleet/tls-pin"
+	mkdir -p "$(dirname "$dest")"
+	printf '%s\n' "$pin" >"$dest"
+	chmod 0600 "$dest"
+	echo "--- TLS: SHA-512 SPKI pin loaded (FLEET_TLS_PIN)"
+}
+
 fleet_curl_tls_args() {
 	# shellcheck disable=SC2034
 	FLEET_CURL_TLS_ARGS=()
@@ -76,6 +108,7 @@ fleet_prepare_tls() {
 	if fleet_tls_trusted_by_system "$probe"; then
 		unset FLEET_CA_FILE 2>/dev/null || true
 		fleet_curl_tls_args
+		fleet_fetch_tls_pin "$central"
 		echo "--- TLS: controller certificate trusted by system CA store"
 		return 0
 	fi
@@ -87,6 +120,7 @@ fleet_prepare_tls() {
 		return 1
 	fi
 	fleet_curl_tls_args
+	fleet_fetch_tls_pin "$central"
 	echo "--- TLS: using FLEET_CA_FILE=${FLEET_CA_FILE}"
 	return 0
 }

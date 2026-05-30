@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { AppInstance } from "../types/app-instance.js";
 import type { WebSocket } from "ws";
 import { isProduction } from "../lib/env.js";
 import { resolveAgentCredential } from "../middleware/agent-auth.js";
@@ -53,7 +53,7 @@ function safeClose(sock: WebSocket, code: number, reason: string) {
   }
 }
 
-export async function agentWsRoutes(app: FastifyInstance) {
+export async function agentWsRoutes(app: AppInstance) {
   app.get(
     "/stream",
     { websocket: true },

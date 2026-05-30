@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { usePolling } from "@/lib/usePolling";
 
@@ -101,12 +101,14 @@ export function BinaryDeployConsole({
 }) {
   const [snapshot, setSnapshot] = useState<DeploySnapshot | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const logRef = useRef<HTMLPreElement>(null);
   const stickToBottom = useRef(true);
 
-  const reload = async () => {
+  const reload = useCallback(async () => {
     if (!open) return;
     setLoading(true);
+    setLoadError(null);
     try {
       let data: DeploySnapshot | null = null;
       if (sessionId) {
@@ -126,18 +128,18 @@ export function BinaryDeployConsole({
         );
       }
       setSnapshot(data);
-    } catch {
-      /* ignore */
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Failed to load deploy console");
     } finally {
       setLoading(false);
     }
-  };
+  }, [open, sessionId]);
 
   useEffect(() => {
     if (!open) return;
     stickToBottom.current = true;
     void reload();
-  }, [open, sessionId]);
+  }, [open, reload]);
 
   const pollMs =
     snapshot?.session?.status === "running" ||
@@ -183,7 +185,11 @@ export function BinaryDeployConsole({
             {session ? (
               <p className="mt-1 text-xs text-white/55">
                 {session.version}+{session.buildId} · started{" "}
-                {new Date(session.startedAt).toLocaleString()} ·{" "}
+                {new Date(session.startedAt).toLocaleString()}
+                {session.finishedAt
+                  ? ` · finished ${new Date(session.finishedAt).toLocaleString()}`
+                  : ""}{" "}
+                ·{" "}
                 <span
                   className={
                     session.status === "running"
@@ -198,7 +204,11 @@ export function BinaryDeployConsole({
               </p>
             ) : (
               <p className="mt-1 text-xs text-white/55">
-                No active deployment. Push an update to start a new rollout.
+                No deployment history yet. Use{" "}
+                <strong className="font-medium text-white/70">
+                  Push update to online agents
+                </strong>{" "}
+                to start a rollout (events stream here in real time).
               </p>
             )}
           </div>
@@ -219,6 +229,12 @@ export function BinaryDeployConsole({
             </button>
           </div>
         </div>
+
+        {loadError ? (
+          <div className="border-b border-red-500/30 bg-red-500/10 px-4 py-2 text-xs text-red-300">
+            {loadError}
+          </div>
+        ) : null}
 
         {session ? (
           <div className="grid gap-2 border-b border-white/10 px-4 py-3 sm:grid-cols-5">
@@ -293,10 +309,18 @@ export function BinaryDeployConsole({
                 <span> {event.message}</span>
               </div>
             ))
-          ) : (
+          ) : session?.status === "running" ? (
             <span className="text-white/45">
-              Waiting for deployment events…
+              Waiting for deployment events… (agents report download / install / restart
+              here)
             </span>
+          ) : session ? (
+            <span className="text-white/45">
+              No log lines stored for this deployment. Agent rows above reflect current
+              state from the database.
+            </span>
+          ) : (
+            <span className="text-white/45">No deployment session to display.</span>
           )}
         </pre>
       </div>

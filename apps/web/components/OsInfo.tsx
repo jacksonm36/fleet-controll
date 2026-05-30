@@ -1,5 +1,11 @@
 import type { ReactNode } from "react";
-import { osDisplayTitle, parseOsDetail } from "@/lib/os-display";
+import {
+  osDisplayTitle,
+  osPrimaryBadgeLabel,
+  parseOsDetail,
+  rhelPlatformLabel,
+  type OsFamily,
+} from "@/lib/os-display";
 
 type OsInfoProps = {
   osType: string;
@@ -8,17 +14,42 @@ type OsInfoProps = {
   variant?: "compact" | "card";
 };
 
+function familyTone(family: OsFamily): "neutral" | "accent" | "muted" | "windows" | "macos" | "freebsd" {
+  switch (family) {
+    case "windows":
+      return "windows";
+    case "macos":
+      return "macos";
+    case "freebsd":
+    case "bsd":
+      return "freebsd";
+    case "ubuntu":
+    case "debian":
+    case "rhel":
+    case "fedora":
+    case "arch":
+    case "alpine":
+    case "suse":
+      return "accent";
+    default:
+      return "muted";
+  }
+}
+
 function OsBadge({
   children,
   tone = "neutral",
 }: {
   children: ReactNode;
-  tone?: "neutral" | "accent" | "muted";
+  tone?: "neutral" | "accent" | "muted" | "windows" | "macos" | "freebsd";
 }) {
   const tones = {
     neutral: "bg-white/10 text-white/70",
     accent: "bg-[hsl(var(--accent))]/15 text-[hsl(var(--accent))]",
     muted: "bg-white/5 text-white/45",
+    windows: "bg-sky-500/15 text-sky-300",
+    macos: "bg-zinc-500/20 text-zinc-200",
+    freebsd: "bg-red-500/15 text-red-300",
   };
   return (
     <span
@@ -44,29 +75,42 @@ export function OsInfo({
   }
 
   const title = osDisplayTitle(parsed, osType);
+  const badgeLabel = osPrimaryBadgeLabel(parsed);
+  const familyBadgeTone = familyTone(parsed.family);
+  const elLabel =
+    parsed.family === "rhel" ? rhelPlatformLabel(parsed.platformId) : null;
 
   if (variant === "compact") {
     return (
       <span className="inline-flex flex-wrap items-center gap-1.5">
         <span className="text-white/80">{title}</span>
-        {parsed.codename ? (
-          <OsBadge tone="accent">{parsed.codename}</OsBadge>
+        <OsBadge tone={familyBadgeTone}>{badgeLabel}</OsBadge>
+        {elLabel ? <OsBadge tone="muted">{elLabel}</OsBadge> : null}
+        {parsed.codename &&
+        (parsed.family === "debian" || parsed.family === "ubuntu") ? (
+          <OsBadge tone="muted">{parsed.codename}</OsBadge>
         ) : null}
       </span>
     );
   }
 
-  const pills: { label: string; tone: "neutral" | "accent" | "muted" }[] = [
-    { label: osType, tone: "neutral" },
+  const pills: { label: string; tone: "neutral" | "accent" | "muted" | "windows" | "macos" | "freebsd" }[] = [
+    { label: badgeLabel, tone: familyBadgeTone },
   ];
   if (parsed.versionId) {
     pills.push({ label: `v${parsed.versionId}`, tone: "accent" });
+  }
+  if (elLabel) {
+    pills.push({ label: elLabel, tone: "muted" });
   }
   if (parsed.codename) {
     pills.push({ label: parsed.codename, tone: "muted" });
   }
   if (parsed.debianVersionFull) {
     pills.push({ label: `Debian ${parsed.debianVersionFull}`, tone: "muted" });
+  }
+  if (parsed.build && parsed.family === "windows") {
+    pills.push({ label: `build ${parsed.build}`, tone: "muted" });
   }
 
   return (

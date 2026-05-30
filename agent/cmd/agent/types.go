@@ -3,8 +3,11 @@ package main
 import "encoding/json"
 
 type enrollResponse struct {
-	AgentID  string `json:"agentId"`
-	APIToken string `json:"apiToken"`
+	AgentID        string `json:"agentId"`
+	APIToken       string `json:"apiToken"`
+	MtlsCert       string `json:"mtlsCert,omitempty"`
+	MtlsKey        string `json:"mtlsKey,omitempty"`
+	MtlsExpiresAt  string `json:"mtlsExpiresAt,omitempty"`
 }
 
 type jobRecord struct {

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
-import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
+import { startRegistration } from "@simplewebauthn/browser";
 import { Shell } from "@/components/Shell";
 import { AuthLoadingShell } from "@/components/AuthLoadingShell";
 import { apiFetch } from "@/lib/api";
@@ -10,6 +10,7 @@ import { logoutSession, markCookieSession } from "@/lib/auth";
 import { SecurityChecklist } from "@/components/SecurityChecklist";
 import { passwordPolicyHint, validateNewPassword } from "@/lib/password-policy";
 import { useSession } from "@/lib/useSession";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 
 type MeUser = {
@@ -344,7 +345,14 @@ export default function SettingsPage() {
                 </button>
               ) : (
                 <div className="space-y-3">
-                  <img src={totpSetup.qrDataUrl} alt="TOTP QR code" className="h-40 w-40 rounded bg-white p-2" />
+                  <Image
+                    src={totpSetup.qrDataUrl}
+                    alt="TOTP QR code"
+                    width={160}
+                    height={160}
+                    unoptimized
+                    className="h-40 w-40 rounded bg-white p-2"
+                  />
                   <p className="text-xs text-white/50 break-all">Secret: {totpSetup.secret}</p>
                   <form onSubmit={(e) => void enableTotp(e)} className="flex flex-wrap gap-2">
                     <input

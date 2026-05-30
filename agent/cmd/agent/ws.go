@@ -10,7 +10,7 @@ import (
 )
 
 func maintainWebSocket(base, token string, cli *http.Client) {
-	d := newWebSocketDialer()
+	d := newWebSocketDialer(base)
 
 	for {
 		streamURL := websocketURL(joinURL(base, "/api/agent/v1/stream"))
@@ -57,6 +57,7 @@ func handleWebSocketMessage(cli *http.Client, base, token string, raw []byte) {
 	case "poll_commands", "wake":
 		wakeCommandPoll()
 	case "upgrade_binary", "agent_upgrade":
+		log.Printf("binary update: push received from controller via websocket")
 		triggerBinaryUpdateCheck(cli, base, token)
 		wakeCommandPoll()
 	}

@@ -1,15 +1,17 @@
 import { prisma } from "@fleet/db";
 import type { JobType } from "@prisma/client";
-import type { FastifyInstance } from "fastify";
+import type { AppInstance } from "../types/app-instance.js";
 import { z } from "zod";
-import { cacheWrap, invalidateFleetCaches } from "../lib/cache.js";
+import { cacheDel, cacheWrap, invalidateFleetCaches } from "../lib/cache.js";
 import { isAgentOnline } from "../lib/agent-presence.js";
 import {
   agentDeployState,
   appendBinaryDeployEvent,
+  type BinaryDeploySession,
   ensureBinaryDeploySession,
   getActiveBinaryDeploySession,
   getBinaryDeploySession,
+  getLatestBinaryDeploySession,
   listBinaryDeploySessions,
   mergeDeployEventLog,
   refreshBinaryDeploySessionStatus,
@@ -21,8 +23,14 @@ import {
   reconcileAllStaleBinaryUpgrades,
 } from "../lib/binary-upgrade-reconcile.js";
 import { assertOperator, requireUser } from "../middleware/auth.js";
-import { disconnectAgent, notifyAgent } from "../lib/agent-sockets.js";
+import { deleteFleetAgent } from "../lib/agent-delete.js";
+import { notifyAgent } from "../lib/agent-sockets.js";
 import { readAgentManifest } from "../lib/agent-release.js";
+import { reconcileAllStaleJobs } from "../lib/job-reconcile.js";
+import {
+  agentLabelsJson,
+  machineHostnameFromLabels,
+} from "../lib/agent-labels.js";
 
 const updateAgentSchema = z.object({
   hostname: z
@@ -34,6 +42,10 @@ const updateAgentSchema = z.object({
       /^[A-Za-z0-9][A-Za-z0-9._-]*$/,
       "Use letters, numbers, dots, dashes, or underscores",
     ),
+});
+
+const bulkDeleteAgentsSchema = z.object({
+  ids: z.array(z.string().min(1)).min(1).max(200),
 });
 
 function mapAgentRow(
@@ -75,7 +87,8 @@ function agentsInActiveRollout(
     if (a.binaryUpgradeInProgress) return true;
     if (!a.binaryUpgradeLastError?.trim()) return false;
     if (a.binaryUpgradeForcedBuildId?.toLowerCase().trim() === bid) return true;
-    return !agentMatchesReleaseBuild(a.version, null, manifest.buildId);
+    if (!agentMatchesReleaseBuild(a.version, null, manifest.buildId)) return true;
+    return false;
   });
   if (flagged.length) return flagged;
 
@@ -112,12 +125,10 @@ async function buildBinaryDeploySnapshot(sessionId?: string | null) {
     binaryUpgradeForcedBuildId: a.binaryUpgradeForcedBuildId,
   }));
 
-  if (manifest) {
-    supersedeBinaryDeploySessions(manifest.buildId);
-  }
-
-  let session =
-    getBinaryDeploySession(sessionId) ?? getActiveBinaryDeploySession();
+  let session: BinaryDeploySession | null =
+    getBinaryDeploySession(sessionId) ??
+    getActiveBinaryDeploySession() ??
+    getLatestBinaryDeploySession();
 
   if (!session && sessionId) {
     session = listBinaryDeploySessions(12).find((s) => s.id === sessionId) ?? null;
@@ -126,7 +137,9 @@ async function buildBinaryDeploySnapshot(sessionId?: string | null) {
   if (
     session &&
     manifest &&
-    session.buildId.toLowerCase().trim() !== manifest.buildId.toLowerCase().trim()
+    !sessionId &&
+    session.buildId.toLowerCase().trim() !==
+      manifest.buildId.toLowerCase().trim()
   ) {
     session = null;
   }
@@ -153,7 +166,27 @@ async function buildBinaryDeploySnapshot(sessionId?: string | null) {
   }
 
   if (!session) {
-    return { session: null, agents: [] };
+    const allMapped = mapped.map((a) => ({
+      id: a.id,
+      hostname: a.hostname,
+      online: a.online,
+      version: a.version,
+      binaryUpgradeInProgress: a.binaryUpgradeInProgress,
+      binaryUpgradeLastError: a.binaryUpgradeLastError,
+      binaryUpgradeForcedBuildId: a.binaryUpgradeForcedBuildId,
+      deployState: (manifest
+        ? agentDeployState({
+            hostname: a.hostname,
+            online: a.online,
+            version: a.version,
+            binaryUpgradeInProgress: a.binaryUpgradeInProgress,
+            binaryUpgradeLastError: a.binaryUpgradeLastError,
+            binaryUpgradeForcedBuildId: a.binaryUpgradeForcedBuildId,
+            targetBuildId: manifest.buildId,
+          })
+        : "offline") as "pending" | "upgrading" | "success" | "failed" | "offline",
+    }));
+    return { session: null, agents: allMapped };
   }
 
   const refreshed = refreshBinaryDeploySessionStatus(session, mapped);
@@ -191,13 +224,14 @@ async function buildBinaryDeploySnapshot(sessionId?: string | null) {
   };
 }
 
-export async function agentsRoutes(app: FastifyInstance) {
+export async function agentsRoutes(app: AppInstance) {
   app.get(
     "/",
     { preHandler: requireUser },
     async (_req, reply) => {
       const { data, meta } = await cacheWrap("agents:list", 4, async () => {
         await reconcileAllStaleBinaryUpgrades();
+        await reconcileAllStaleJobs();
         const agents = await prisma.agent.findMany({
           orderBy: { hostname: "asc" },
           include: {
@@ -287,9 +321,32 @@ export async function agentsRoutes(app: FastifyInstance) {
       });
       if (!existing) return reply.code(404).send({ error: "not_found" });
 
+      const nameTaken = await prisma.agent.findFirst({
+        where: {
+          hostname: parsed.data.hostname,
+          id: { not: existing.id },
+        },
+        select: { id: true },
+      });
+      if (nameTaken) {
+        return reply.code(409).send({
+          error: "hostname_taken",
+          message: "Another agent already uses this name",
+        });
+      }
+
+      const priorMachine =
+        machineHostnameFromLabels(existing.labels) ?? existing.hostname;
+      const labels = agentLabelsJson({
+        machineHostname: priorMachine,
+      });
+
       const agent = await prisma.agent.update({
         where: { id: existing.id },
-        data: { hostname: parsed.data.hostname },
+        data: {
+          hostname: parsed.data.hostname,
+          labels,
+        },
         include: {
           credential: { select: { createdAt: true } },
           _count: {
@@ -371,27 +428,56 @@ export async function agentsRoutes(app: FastifyInstance) {
     },
   );
 
+  app.post(
+    "/bulk-delete",
+    { preHandler: requireUser },
+    async (req, reply) => {
+      if (!assertOperator(req, reply)) return;
+      const parsed = bulkDeleteAgentsSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: "invalid_body" });
+      }
+
+      const actorId = (req.user as { sub: string }).sub;
+      const uniqueIds = [...new Set(parsed.data.ids)];
+      let deleted = 0;
+      const hostnames: string[] = [];
+      const notFound: string[] = [];
+
+      for (const id of uniqueIds) {
+        const result = await deleteFleetAgent(id, actorId);
+        if (result) {
+          deleted += 1;
+          hostnames.push(result.hostname);
+        } else {
+          notFound.push(id);
+        }
+      }
+
+      if (deleted > 0) {
+        await prisma.auditEvent.create({
+          data: {
+            actorId,
+            action: "agents_bulk_deleted",
+            meta: { deleted, hostnames, notFound },
+          },
+        });
+      }
+
+      return { deleted, notFound };
+    },
+  );
+
   app.delete<{ Params: { id: string } }>(
     "/:id",
     { preHandler: requireUser },
     async (req, reply) => {
       if (!assertOperator(req, reply)) return;
-      const agent = await prisma.agent.findUnique({
-        where: { id: req.params.id },
-      });
-      if (!agent) return reply.code(404).send({ error: "not_found" });
-
-      disconnectAgent(agent.id);
-      await prisma.agent.delete({ where: { id: agent.id } });
-      await invalidateFleetCaches(agent.id);
-      await prisma.auditEvent.create({
-        data: {
-          actorId: (req.user as { sub: string }).sub,
-          action: "agent_deleted",
-          meta: { agentId: agent.id, hostname: agent.hostname },
-        },
-      });
-
+      const result = await deleteFleetAgent(
+        req.params.id,
+        (req.user as { sub: string }).sub,
+      );
+      if (!result) return reply.code(404).send({ error: "not_found" });
       return { ok: true };
     },
   );
@@ -411,7 +497,12 @@ export async function agentsRoutes(app: FastifyInstance) {
           const snap = await prisma.crowdSecSnapshot.findUnique({
             where: { agentId: agent.id },
           });
-          return snap ?? null;
+          if (!snap) return null;
+          const body = snap.payload as Record<string, unknown>;
+          return {
+            ...body,
+            capturedAt: snap.capturedAt.toISOString(),
+          };
         },
       );
       if (data === undefined) return reply.code(404).send({ error: "not_found" });
@@ -622,6 +713,14 @@ export async function agentsRoutes(app: FastifyInstance) {
         });
       }
 
+      const bodySchema = z.object({
+        rebootOnly: z.boolean().optional(),
+        rebootDelaySec: z.number().int().min(0).max(300).optional(),
+      });
+      const body = bodySchema.safeParse(req.body ?? {});
+      const rebootOnly = body.success && body.data.rebootOnly === true;
+      const rebootDelaySec = body.success ? body.data.rebootDelaySec ?? 5 : 5;
+
       const existing = await prisma.job.findFirst({
         where: {
           agentId: agent.id,
@@ -638,7 +737,7 @@ export async function agentsRoutes(app: FastifyInstance) {
         data: {
           agentId: agent.id,
           type: "HOST_KERNEL_MAINTENANCE" as JobType,
-          payload: { rebootDelaySec: 5 },
+          payload: { rebootDelaySec, rebootOnly },
           status: "QUEUED",
         },
       });
@@ -715,6 +814,8 @@ export async function agentsRoutes(app: FastifyInstance) {
         level: "info",
         message: `Notifying ${agents.length} online agent(s) via websocket and heartbeat`,
       });
+
+      await cacheDel("agents:list");
 
       for (const agent of agents) {
         notifyAgent(agent.id, { type: "upgrade_binary", buildId: manifest.buildId });

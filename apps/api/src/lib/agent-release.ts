@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolveRepoRoot } from "./repo-root.js";
 
 export type AgentReleaseAsset = {
   file: string;
@@ -16,8 +16,7 @@ export type AgentReleaseManifest = {
   assets: Record<string, AgentReleaseAsset>;
 };
 
-const apiDir = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(apiDir, "../../../..");
+const repoRoot = resolveRepoRoot();
 const agentBinDir = path.resolve(repoRoot, "agent/bin");
 const manifestPath = path.resolve(agentBinDir, "manifest.json");
 

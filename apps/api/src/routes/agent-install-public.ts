@@ -1,8 +1,7 @@
 import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { AppInstance, AppReply, AppRequest } from "../types/app-instance.js";
 import {
   fleetCaCertPath,
   fleetCaDownloadUrl,
@@ -10,11 +9,18 @@ import {
   secureCentralApiUrl,
   securePublicBase,
 } from "../lib/fleet-urls.js";
-import { fleetPublicHost, fleetRequireTls } from "../lib/env.js";
+import {
+  fleetPublicHost,
+  fleetRequireTls,
+  fleetTlsMinVersionForAgents,
+  fleetTlsPinAuto,
+} from "../lib/env.js";
+import { fleetMtlsCaReady } from "../lib/fleet-mtls.js";
+import { controllerTlsPinInfo } from "../lib/fleet-tls-pin.js";
 import { readAgentManifest } from "../lib/agent-release.js";
+import { resolveRepoRoot } from "../lib/repo-root.js";
 
-const apiDir = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(apiDir, "../../../..");
+const repoRoot = resolveRepoRoot();
 const installScriptPath = path.resolve(repoRoot, "scripts/install-fleet-agent.sh");
 const prebuiltInstallPath = path.resolve(
   repoRoot,
@@ -128,7 +134,7 @@ function setInjectedVar(body: string, key: string, value: string): string {
 
 function injectInstallVars(
   body: string,
-  req: FastifyRequest,
+  req: AppRequest,
   apiPort: number,
 ): string {
   const publicBase = securePublicBase(req, apiPort);
@@ -153,6 +159,14 @@ function injectInstallVars(
     out = setInjectedVar(out, "FLEET_REQUIRE_TLS_BOOTSTRAP", "1");
   }
 
+  if (fleetTlsPinAuto()) {
+    out = setInjectedVar(out, "FLEET_TLS_PIN_AUTO", "1");
+  }
+  const minTls = fleetTlsMinVersionForAgents();
+  if (minTls) {
+    out = setInjectedVar(out, "FLEET_TLS_MIN_VERSION", minTls);
+  }
+
   // Safe install: do not apt-install docker.io or other scanner deps unless opted in.
   out = setInjectedVar(out, "FLEET_SKIP_SCANNER_DEPS", "1");
 
@@ -168,7 +182,7 @@ function injectInstallVars(
   return out;
 }
 
-function renderInstallScript(req: FastifyRequest, apiPort: number): string {
+function renderInstallScript(req: AppRequest, apiPort: number): string {
   let body = readFileSync(installScriptPath, "utf8");
   body = injectInstallVars(body, req, apiPort);
   const sourceUrl = `${securePublicBase(req, apiPort)}/api/public/agent-source.tar.gz`;
@@ -180,7 +194,7 @@ function renderInstallScript(req: FastifyRequest, apiPort: number): string {
 }
 
 function renderBootstrapInstaller(
-  req: FastifyRequest,
+  req: AppRequest,
   apiPort: number,
   usageUrl: string,
 ): string {
@@ -203,7 +217,7 @@ FLEET_INSTALL_BODY
 `;
 }
 
-function hostFromRequest(req: FastifyRequest): string {
+function hostFromRequest(req: AppRequest): string {
   const xfHost = req.headers["x-forwarded-host"];
   const hostHeader =
     (typeof xfHost === "string" && xfHost.split(",")[0]?.trim()) ||
@@ -212,8 +226,8 @@ function hostFromRequest(req: FastifyRequest): string {
   return hostHeader.replace(/:\d+$/, "");
 }
 
-export async function agentInstallPublicRoutes(app: FastifyInstance) {
-  const serveCaPem = async (_req: FastifyRequest, reply: FastifyReply) => {
+export async function agentInstallPublicRoutes(app: AppInstance) {
+  const serveCaPem = async (_req: AppRequest, reply: AppReply) => {
     const caPath = fleetCaCertPath();
     if (!caPath) {
       return reply.code(404).send({
@@ -235,9 +249,20 @@ export async function agentInstallPublicRoutes(app: FastifyInstance) {
   app.get("/tls-ca.crt", serveCaPem);
   app.get("/caddy-ca.crt", serveCaPem);
 
+  app.get("/tls-pin.json", async (_req, reply) => {
+    const pin = controllerTlsPinInfo();
+    if (!pin) {
+      return reply.code(404).send({
+        error: "pin_not_available",
+        message: "Controller TLS certificate not found on disk.",
+      });
+    }
+    return pin;
+  });
+
   const sendBootstrapInstaller = (
-    req: FastifyRequest,
-    reply: FastifyReply,
+    req: AppRequest,
+    reply: AppReply,
     usageUrl: string,
     filename: string,
   ) => {
@@ -328,6 +353,13 @@ export async function agentInstallPublicRoutes(app: FastifyInstance) {
       }
       if (fleetRequireTls()) {
         body = setInjectedVar(body, "FLEET_REQUIRE_TLS_BOOTSTRAP", "1");
+      }
+      if (fleetTlsPinAuto()) {
+        body = setInjectedVar(body, "FLEET_TLS_PIN_AUTO", "1");
+      }
+      const minTls = fleetTlsMinVersionForAgents();
+      if (minTls) {
+        body = setInjectedVar(body, "FLEET_TLS_MIN_VERSION", minTls);
       }
       body = body.replace(
         /^FLEET_CA_DOWNLOAD_URL=.*/m,

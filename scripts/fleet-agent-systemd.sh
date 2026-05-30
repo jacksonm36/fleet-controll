@@ -122,12 +122,20 @@ fleet_agent_write_runtime_config() {
 
 	mkdir -p "$(dirname "$cfg")" "$(dirname "$ca_file")" "$dat"
 
-	cat >"$cfg" <<EOF
+	{
+		cat <<EOF
 # Written by fleet-agent install/autoconnect — do not put pairing secrets here.
 FLEET_CENTRAL_URL=${central}
 FLEET_CA_FILE=${ca_file}
 PATH=${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin
 EOF
+		if [[ -n "${FLEET_TLS_PIN:-}" ]]; then
+			printf 'FLEET_TLS_PIN=%s\n' "$FLEET_TLS_PIN"
+		fi
+		if [[ -n "${FLEET_TLS_MIN_VERSION:-}" ]]; then
+			printf 'FLEET_TLS_MIN_VERSION=%s\n' "$FLEET_TLS_MIN_VERSION"
+		fi
+	} >"$cfg"
 	chmod 0600 "$cfg"
 
 	cat >"$dat/run.sh" <<EOS
@@ -293,6 +301,11 @@ fleet_agent_ensure_connected() {
 		fleet_agent_install_system_unit "$HOME" || return 1
 	else
 		fleet_agent_install_user_unit "$HOME" || return 1
+	fi
+
+	if [[ "${FLEET_DEFER_AGENT_RESTART:-0}" == "1" ]]; then
+		echo "TLS/systemd config applied (agent restart deferred)."
+		return 0
 	fi
 
 	fleet_agent_restart_service || return 1

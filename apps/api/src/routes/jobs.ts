@@ -1,6 +1,6 @@
 import { prisma } from "@fleet/db";
-import type { JobStatus, JobType } from "@prisma/client";
-import type { FastifyInstance } from "fastify";
+import type { JobStatus, JobType, Prisma } from "@prisma/client";
+import type { AppInstance } from "../types/app-instance.js";
 import { z } from "zod";
 import { invalidateFleetCaches } from "../lib/cache.js";
 import { notifyAgent } from "../lib/agent-sockets.js";
@@ -37,7 +37,7 @@ const createSchema = z.object({
   payload: z.record(z.unknown()),
 });
 
-export async function jobsRoutes(app: FastifyInstance) {
+export async function jobsRoutes(app: AppInstance) {
   app.get(
     "/",
     { preHandler: requireUser },
@@ -103,7 +103,7 @@ export async function jobsRoutes(app: FastifyInstance) {
         data: {
           agentId,
           type: type as JobType,
-          payload,
+          payload: payload as Prisma.InputJsonValue,
           status: "QUEUED",
         },
       });

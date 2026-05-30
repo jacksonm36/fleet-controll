@@ -1,11 +1,11 @@
-import type { FastifyRequest } from "fastify";
+import type { AppRequest } from "../types/app-instance.js";
 import { fleetPublicHost } from "./env.js";
 
 export function webAuthnRpName(): string {
   return process.env.WEBAUTHN_RP_NAME?.trim() || "Fleet Patch Control";
 }
 
-export function webAuthnRpId(req?: FastifyRequest): string {
+export function webAuthnRpId(req?: AppRequest): string {
   const configured = process.env.WEBAUTHN_RP_ID?.trim();
   if (configured) return configured;
   const host = fleetPublicHost()?.split(":")[0]?.trim();
@@ -17,7 +17,7 @@ export function webAuthnRpId(req?: FastifyRequest): string {
   return "localhost";
 }
 
-export function webAuthnOrigin(req: FastifyRequest): string {
+export function webAuthnOrigin(req: AppRequest): string {
   const configured = process.env.WEBAUTHN_ORIGIN?.trim();
   if (configured) return configured.replace(/\/$/, "");
   const proto =

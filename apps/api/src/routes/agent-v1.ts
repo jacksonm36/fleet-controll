@@ -1,6 +1,6 @@
 import { prisma } from "@fleet/db";
 import type { JobStatus } from "@prisma/client";
-import type { FastifyInstance } from "fastify";
+import type { AppInstance } from "../types/app-instance.js";
 import { z } from "zod";
 import { invalidateFleetCaches } from "../lib/cache.js";
 import {
@@ -11,6 +11,7 @@ import {
 } from "../lib/agent-release.js";
 import {
   agentMatchesReleaseBuild,
+  agentBinaryUpgradeBusy,
   reconcileAllStaleBinaryUpgrades,
   reconcileBinaryUpgradeFlags,
 } from "../lib/binary-upgrade-reconcile.js";
@@ -85,6 +86,7 @@ const inventoryServiceSchema = z.object({
   state: z.string(),
   enabled: z.boolean().optional().nullable(),
   detail: z.union([z.string(), z.number()]).transform(String).optional().nullable(),
+  needsAttention: z.boolean().optional(),
 });
 
 const inventoryContainerSchema = z.object({
@@ -205,7 +207,7 @@ const snapshotSchema = z.object({
   raw: z.record(z.unknown()).optional(),
 });
 
-export async function agentV1Routes(app: FastifyInstance) {
+export async function agentV1Routes(app: AppInstance) {
   app.post(
     "/heartbeat",
     { preHandler: requireAgent },
@@ -215,6 +217,14 @@ export async function agentV1Routes(app: FastifyInstance) {
         version: z.string().optional(),
         build: z.string().optional(),
         arch: z.string().optional(),
+        health: z
+          .object({
+            rebootRequired: z.boolean().optional(),
+            kernelRunning: z.string().optional(),
+            kernelInstalled: z.string().optional(),
+            kernelUpdatePending: z.boolean().optional(),
+          })
+          .optional(),
       });
       const parsed = bodySchema.safeParse(req.body ?? {});
       if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
@@ -223,11 +233,36 @@ export async function agentV1Routes(app: FastifyInstance) {
       const archKey = normalizeAgentArch(parsed.data.arch);
       const agentBuild = parsed.data.build ?? null;
       const agentVersion = parsed.data.version ?? null;
+      const health = parsed.data.health;
 
       const agentRow = await prisma.agent.findUnique({
         where: { id: agentId },
         select: { primaryIp: true },
       });
+
+      const healthUpdate =
+        health &&
+        (health.rebootRequired !== undefined ||
+          health.kernelRunning !== undefined ||
+          health.kernelInstalled !== undefined ||
+          health.kernelUpdatePending !== undefined)
+          ? {
+              ...(health.rebootRequired !== undefined
+                ? { rebootRequired: health.rebootRequired }
+                : {}),
+              ...(health.kernelRunning !== undefined
+                ? { kernelRunning: health.kernelRunning.slice(0, 128) || null }
+                : {}),
+              ...(health.kernelInstalled !== undefined
+                ? {
+                    kernelInstalled: health.kernelInstalled.slice(0, 128) || null,
+                  }
+                : {}),
+              ...(health.kernelUpdatePending !== undefined
+                ? { kernelUpdatePending: health.kernelUpdatePending }
+                : {}),
+            }
+          : {};
 
       await prisma.agent.update({
         where: { id: agentId },
@@ -239,8 +274,12 @@ export async function agentV1Routes(app: FastifyInstance) {
             agentRow?.primaryIp,
             clientIpFromRequest(req),
           ),
+          ...healthUpdate,
         },
       });
+      if (parsed.data.version) {
+        await invalidateFleetCaches(agentId);
+      }
 
       await reconcileBinaryUpgradeFlags({
         agentId,
@@ -251,10 +290,17 @@ export async function agentV1Routes(app: FastifyInstance) {
       });
       await reconcileStaleJobsForAgent(agentId);
 
-      const forcedBuildId = await prisma.agent.findUnique({
+      const agentUpgrade = await prisma.agent.findUnique({
         where: { id: agentId },
-        select: { binaryUpgradeForcedBuildId: true },
+        select: {
+          binaryUpgradeForcedBuildId: true,
+          binaryUpgradeInProgress: true,
+          binaryUpgradeStartedAt: true,
+          lastSeenAt: true,
+        },
       });
+      const upgradeBusy =
+        !!agentUpgrade && agentBinaryUpgradeBusy(agentUpgrade);
 
       let binaryUpdate: {
         version: string;
@@ -280,7 +326,7 @@ export async function agentV1Routes(app: FastifyInstance) {
           const onTargetBuild = !needsBinaryUpdate;
 
           // Already on this build — clear forced rollout flags even if push left forcedBuildId set.
-          if (onTargetBuild && forcedBuildId?.binaryUpgradeForcedBuildId) {
+          if (onTargetBuild && agentUpgrade?.binaryUpgradeForcedBuildId) {
             const agentRow = await prisma.agent.findUnique({
               where: { id: agentId },
               select: { hostname: true },
@@ -306,12 +352,13 @@ export async function agentV1Routes(app: FastifyInstance) {
 
           const forcedMatch =
             !onTargetBuild &&
-            !!forcedBuildId?.binaryUpgradeForcedBuildId &&
-            forcedBuildId.binaryUpgradeForcedBuildId
+            !!agentUpgrade?.binaryUpgradeForcedBuildId &&
+            agentUpgrade.binaryUpgradeForcedBuildId
               .toLowerCase()
               .trim() === rel.buildId.toLowerCase().trim();
 
-          const shouldOffer = needsBinaryUpdate || forcedMatch;
+          const shouldOffer =
+            (needsBinaryUpdate || forcedMatch) && !upgradeBusy;
 
           if (shouldOffer) {
             binaryUpdate = {
@@ -416,9 +463,20 @@ export async function agentV1Routes(app: FastifyInstance) {
             version: deployVersion,
             message: parsed.data.error,
           });
+        } else if (deployBuildId) {
+          appendBinaryDeployEvent({
+            buildId: deployBuildId,
+            version: deployVersion,
+            agentId,
+            hostname: agent.hostname,
+            phase: "online",
+            level: "success",
+            message: `${agent.hostname}: binary upgrade finished`,
+          });
         }
       }
 
+      await invalidateFleetCaches(agentId);
       return { ok: true };
     },
   );
@@ -474,6 +532,7 @@ export async function agentV1Routes(app: FastifyInstance) {
         message: parsed.data.message,
       });
 
+      await invalidateFleetCaches(agentId);
       return { ok: true };
     },
   );

@@ -1,10 +1,22 @@
 import compress from "@fastify/compress";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
-import type { FastifyInstance } from "fastify";
+import type { AppInstance } from "../types/app-instance.js";
+import { clientIpFromRequest } from "../lib/client-ip.js";
 import { cspReportOnlyEnabled, fleetHstsEnabled, isProduction } from "../lib/env.js";
 
-export async function registerSecurityPlugins(app: FastifyInstance) {
+function globalRateLimitMax(): number {
+  const n = Number(process.env.RATE_LIMIT_MAX_PER_MINUTE ?? 0);
+  if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  return isProduction() ? 600 : 1200;
+}
+
+function isAgentApiPath(url: string): boolean {
+  const path = url.split("?")[0] ?? url;
+  return path.startsWith("/api/agent/v1");
+}
+
+export async function registerSecurityPlugins(app: AppInstance) {
   const cspReportOnly = cspReportOnlyEnabled();
   await app.register(helmet, {
     global: true,
@@ -37,11 +49,13 @@ export async function registerSecurityPlugins(app: FastifyInstance) {
 
   await app.register(rateLimit, {
     global: true,
-    max: isProduction() ? 240 : 600,
+    max: globalRateLimitMax(),
     timeWindow: "1 minute",
     ban: 0,
-    keyGenerator: (req) => req.ip,
+    keyGenerator: (req) => clientIpFromRequest(req) ?? req.ip,
+    allowList: (req) => isAgentApiPath(req.url),
     errorResponseBuilder: (_req, context) => ({
+      statusCode: 429,
       error: "rate_limit_exceeded",
       message: `Too many requests — retry after ${Math.ceil(context.ttl / 1000)}s`,
     }),
@@ -49,20 +63,21 @@ export async function registerSecurityPlugins(app: FastifyInstance) {
 }
 
 /** Limit agent enrollment attempts per IP (brute-force / flood). */
-export async function registerEnrollRateLimit(app: FastifyInstance) {
+export async function registerEnrollRateLimit(app: AppInstance) {
   const max = Number(process.env.ENROLL_RATE_MAX ?? (isProduction() ? 20 : 60));
   await app.register(rateLimit, {
     max,
     timeWindow: "15 minutes",
     keyGenerator: (req) => `enroll:${req.ip}`,
     errorResponseBuilder: (_req, context) => ({
+      statusCode: 429,
       error: "rate_limit_exceeded",
       message: `Too many enrollment attempts — retry after ${Math.ceil(context.ttl / 1000)}s`,
     }),
   });
 }
 
-export async function registerAuthRateLimit(app: FastifyInstance) {
+export async function registerAuthRateLimit(app: AppInstance) {
   const max = Number(
     process.env.AUTH_LOGIN_RATE_MAX ??
       (isProduction() ? 30 : 120),
@@ -72,6 +87,7 @@ export async function registerAuthRateLimit(app: FastifyInstance) {
     timeWindow: "15 minutes",
     keyGenerator: (req) => `login:${req.ip}`,
     errorResponseBuilder: (_req, context) => ({
+      statusCode: 429,
       error: "rate_limit_exceeded",
       message: `Too many login attempts — retry after ${Math.ceil(context.ttl / 1000)}s`,
     }),

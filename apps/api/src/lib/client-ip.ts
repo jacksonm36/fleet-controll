@@ -1,4 +1,4 @@
-import type { FastifyRequest } from "fastify";
+import type { AppRequest } from "../types/app-instance.js";
 
 function normalizeIp(raw: string | undefined): string | null {
   if (!raw) return null;
@@ -15,7 +15,7 @@ function normalizeIp(raw: string | undefined): string | null {
 }
 
 /** Best-effort client IP for agent HTTP requests (heartbeat, metrics, inventory). */
-export function clientIpFromRequest(req: FastifyRequest): string | null {
+export function clientIpFromRequest(req: AppRequest): string | null {
   const forwarded = req.headers["x-forwarded-for"];
   if (typeof forwarded === "string" && forwarded.trim()) {
     const first = forwarded.split(",")[0]?.trim();

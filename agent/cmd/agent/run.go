@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -62,24 +61,38 @@ func runAgent() {
 
 	centralURL = strings.TrimRight(strings.TrimSpace(centralURL), "/")
 	ensureControllerCA(centralURL)
+	loadTlsPinFromFile()
 
 	if err := validateCentralURL(centralURL); err != nil {
 		log.Fatalf("invalid controller URL: %v", err)
 	}
 
-	httpClient := newSecureHTTPClient(45 * time.Second)
+	log.Printf(
+		"fleet-agent starting version=%s build=%s arch=%s controller=%s",
+		agentVersionString(),
+		agentBuildID(),
+		runtimeArchKey(),
+		centralURL,
+	)
+	logPendingUpgradeSuccess()
+
+	httpClient := newSecureHTTPClient(45*time.Second, centralURL)
 	sudo := strings.EqualFold(useSudo, "true")
+
+	runAgentSelfHeal(httpClient, centralURL, apiToken)
+	startSelfHealLoop(httpClient, centralURL, apiToken)
 
 	go maintainWebSocket(centralURL, apiToken, httpClient)
 
-	inventoryTicker := time.NewTicker(10 * time.Minute)
+	inventorySec := durationFromEnvSec("FLEET_INVENTORY_INTERVAL_SEC", 180)
+	inventoryTicker := time.NewTicker(time.Duration(inventorySec) * time.Second)
 	crowdSecTicker := time.NewTicker(5 * time.Minute)
-	heartbeatSec := durationFromEnvSec("FLEET_HEARTBEAT_INTERVAL_SEC", 15)
-	metricsSec := durationFromEnvSec("FLEET_METRICS_INTERVAL_SEC", 20)
+	heartbeatSec := durationFromEnvSec("FLEET_HEARTBEAT_INTERVAL_SEC", 10)
+	metricsSec := durationFromEnvSec("FLEET_METRICS_INTERVAL_SEC", 5)
 	heartbeatTicker := time.NewTicker(time.Duration(heartbeatSec) * time.Second)
 	metricsTicker := time.NewTicker(time.Duration(metricsSec) * time.Second)
 
-	if err := heartbeat(httpClient, centralURL, apiToken, versionFlag); err != nil {
+	if err := heartbeat(httpClient, centralURL, apiToken, versionFlag, sudo); err != nil {
 		log.Printf("heartbeat error: %v", err)
 	}
 	if err := pushMetrics(httpClient, centralURL, apiToken); err != nil {
@@ -87,6 +100,8 @@ func runAgent() {
 	}
 	if err := pushInventory(httpClient, centralURL, apiToken, sudo); err != nil {
 		log.Printf("initial inventory error: %v", err)
+	} else {
+		logHealthPing(sudo)
 	}
 	if !skipCrowdSec {
 		if err := pushCrowdSec(httpClient, centralURL, apiToken); err != nil {
@@ -104,7 +119,7 @@ func runAgent() {
 
 	go func() {
 		for range heartbeatTicker.C {
-			if err := heartbeat(httpClient, centralURL, apiToken, versionFlag); err != nil {
+			if err := heartbeat(httpClient, centralURL, apiToken, versionFlag, sudo); err != nil {
 				log.Printf("heartbeat error: %v", err)
 			}
 		}
@@ -114,6 +129,8 @@ func runAgent() {
 		for range inventoryTicker.C {
 			if err := pushInventory(httpClient, centralURL, apiToken, sudo); err != nil {
 				log.Printf("inventory error: %v", err)
+			} else {
+				logHealthPing(sudo)
 			}
 		}
 	}()
@@ -132,11 +149,12 @@ func runAgent() {
 	commandLoop(httpClient, centralURL, apiToken, sudo)
 }
 
-func heartbeat(cli *http.Client, base, token, version string) error {
+func heartbeat(cli *http.Client, base, token, version string, sudo bool) error {
 	body := map[string]any{
 		"version": version,
 		"build":   agentBuildID(),
 		"arch":    runtimeArchKey(),
+		"health":  collectHealthPing(sudo),
 	}
 	var out struct {
 		BinaryUpdate *binaryUpdateOffer `json:"binaryUpdate"`
@@ -146,6 +164,21 @@ func heartbeat(cli *http.Client, base, token, version string) error {
 	}
 	maybeApplyBinaryUpdate(cli, base, token, out.BinaryUpdate)
 	return nil
+}
+
+func logHealthPing(sudo bool) {
+	h := collectHealthPing(sudo)
+	running, _ := h["kernelRunning"].(string)
+	installed, _ := h["kernelInstalled"].(string)
+	pending, _ := h["kernelUpdatePending"].(bool)
+	reboot, _ := h["rebootRequired"].(bool)
+	log.Printf(
+		"health: kernel running=%s installed=%s updatePending=%v rebootRequired=%v",
+		running,
+		installed,
+		pending,
+		reboot,
+	)
 }
 
 func pushInventory(cli *http.Client, base, token string, sudo bool) error {
@@ -167,7 +200,7 @@ func pushCrowdSec(cli *http.Client, base, token string) error {
 }
 
 func commandLoop(cli *http.Client, base, token string, sudo bool) {
-	poll := newSecureHTTPClient(35 * time.Second)
+	poll := newSecureHTTPClient(35*time.Second, base)
 	for {
 		ctx, cancel := context.WithCancel(context.Background())
 		setCommandPollCancel(cancel)
@@ -190,30 +223,31 @@ func commandLoop(cli *http.Client, base, token string, sudo bool) {
 }
 
 func enrollAgent(base, token, hostname, version string) (string, error) {
-	if strings.TrimSpace(hostname) == "" {
-		h, err := os.Hostname()
-		if err != nil {
-			return "", err
-		}
-		hostname = h
-	}
 	body := map[string]any{
 		"token":    token,
-		"hostname": hostname,
-		"osType":   runtime.GOOS,
-		"osDetail": collectOSDetail(),
+		"hostname": enrollHostnameFlag(hostname),
+		"osType":   fleetOsType(),
+		"osDetail": enrollOSDetail(),
 		"version":  version,
 	}
+	if fleet := strings.TrimSpace(getenvDefault("FLEET_HOSTNAME", "")); fleet != "" {
+		body["fleetHostname"] = normalizeEnrollHostname(fleet)
+	}
 	var out enrollResponse
-	cli := newSecureHTTPClient(45 * time.Second)
 	if err := validateCentralURL(base); err != nil {
 		return "", err
 	}
+	cli := newSecureHTTPClient(45*time.Second, base)
 	if err := postJSON(cli, joinURL(base, "/api/agent/v1/enroll"), body, "", &out); err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(out.APIToken) == "" {
 		return "", errors.New("missing api token from server")
+	}
+	if strings.TrimSpace(out.MtlsCert) != "" && strings.TrimSpace(out.MtlsKey) != "" {
+		if err := saveAgentMtlsMaterial(out.MtlsCert, out.MtlsKey); err != nil {
+			log.Printf("warning: save mTLS material: %v", err)
+		}
 	}
 	return out.APIToken, nil
 }

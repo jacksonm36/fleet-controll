@@ -94,6 +94,20 @@ func runJob(cli *http.Client, base, token string, job *jobRecord, sudo bool) {
 			fail(err)
 			return
 		}
+		if inv, invErr := collectInventory(sudo); invErr != nil {
+			logFn(fmt.Sprintf("warning: post-kernel inventory collect: %v", invErr))
+		} else {
+			var discard map[string]any
+			if pushErr := postJSON(cli, joinURL(base, "/api/agent/v1/inventory"), inv, token, &discard); pushErr != nil {
+				logFn(fmt.Sprintf("warning: post-kernel inventory push: %v", pushErr))
+			} else {
+				logFn("Inventory pushed to controller (kernel status updated)")
+				if k, ok := inv["kernel"].(map[string]any); ok {
+					logFn(fmt.Sprintf("Kernel now: running=%v installed=%v updatePending=%v",
+						k["running"], k["latestInstalled"], k["updatePending"]))
+				}
+			}
+		}
 		if err := completeJobWithResult(cli, base, token, job.ID, "COMPLETED", "", result); err != nil {
 			log.Printf("complete job failed: %v", err)
 		}

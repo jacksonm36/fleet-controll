@@ -22,10 +22,16 @@ func collectCrowdSecSnapshot() (map[string]any, bool) {
 		_ = json.Unmarshal(bytes.TrimSpace(out), &alerts)
 	}
 
-	decisions := any([]any{})
+	decisionsRaw := any([]any{})
 	if out, err := exec.Command(cscli, "decisions", "list", "-o", "json", "-l", "200").CombinedOutput(); err == nil {
-		_ = json.Unmarshal(bytes.TrimSpace(out), &decisions)
+		_ = json.Unmarshal(bytes.TrimSpace(out), &decisionsRaw)
 	}
+	flat := flattenCrowdSecDecisions(decisionsRaw)
+	decisionList := make([]any, 0, len(flat))
+	for _, d := range flat {
+		decisionList = append(decisionList, d)
+	}
+	decisions := any(decisionList)
 
 	version := ""
 	if out, err := exec.Command(cscli, "version").CombinedOutput(); err == nil {
@@ -107,6 +113,10 @@ func collectPackages(sudo bool) []map[string]any {
 		return collectPackagesLinux(sudo)
 	case "windows":
 		return collectPackagesWindows()
+	case "darwin":
+		return collectBrewPackages()
+	case "freebsd", "openbsd", "netbsd":
+		return collectPkgPackages()
 	default:
 		return []map[string]any{}
 	}
@@ -222,16 +232,7 @@ Write-Output $obj`
 	}
 }
 
-func collectOSDetail() string {
-	if runtime.GOOS != "linux" {
-		return runtime.GOARCH
-	}
-	b, err := os.ReadFile("/etc/os-release")
-	if err != nil {
-		return runtime.GOARCH
-	}
-	return strings.TrimSpace(string(b))
-}
+// collectOSDetail is implemented in inventory_os.go (linux, windows, darwin, freebsd, …).
 
 func defaultTokenPath() string {
 	dir, err := os.UserHomeDir()

@@ -91,24 +91,44 @@ func parsePatchPayload(payload json.RawMessage) patchUpgradeOpts {
 }
 
 func runPackagePatchPlan(payload json.RawMessage, sudo bool, logFn func(string)) (patchPlanResult, error) {
-	if runtime.GOOS != "linux" {
-		return patchPlanResult{}, fmt.Errorf("patch plan only supported on linux")
-	}
 	opts := parsePatchPayload(payload)
-	if opts.manager == "" {
-		opts.manager = "apt"
-	}
+	applyDefaultPatchManager(&opts)
 	logFn(fmt.Sprintf("dry-run patch plan manager=%s securityOnly=%v", opts.manager, opts.securityOnly))
 
 	var plan []patchPlanEntry
 	var err error
-	switch opts.manager {
-	case "dnf", "yum":
-		plan, err = dryRunDnfPlan(sudo, opts)
-	case "apt", "dpkg":
-		plan, err = dryRunAptPlan(sudo, opts)
+	switch runtime.GOOS {
+	case "linux":
+		switch opts.manager {
+		case "dnf", "yum":
+			plan, err = dryRunDnfPlan(sudo, opts)
+		case "apt", "dpkg":
+			plan, err = dryRunAptPlan(sudo, opts)
+		case "pacman":
+			plan, err = listPacmanUpgradablePlan(sudo, opts.securityOnly)
+		case "apk":
+			plan, err = listApkUpgradablePlan(sudo, opts.securityOnly)
+		case "zypper":
+			plan, err = listZypperUpgradablePlan(sudo, opts.securityOnly)
+		case "emerge":
+			plan, err = listEmergeUpgradablePlan(sudo, opts.securityOnly)
+		default:
+			return patchPlanResult{}, fmt.Errorf("unsupported manager %s", opts.manager)
+		}
+	case "darwin":
+		if opts.manager != "brew" {
+			return patchPlanResult{}, fmt.Errorf("unsupported darwin manager %s", opts.manager)
+		}
+		plan, err = listBrewUpgradablePlan(sudo, opts.securityOnly)
+	case "freebsd", "openbsd", "netbsd":
+		if opts.manager != "pkg" {
+			return patchPlanResult{}, fmt.Errorf("unsupported bsd manager %s", opts.manager)
+		}
+		plan, err = listPkgUpgradablePlan(sudo, opts.securityOnly)
+	case "windows":
+		return patchPlanResult{}, fmt.Errorf("patch plan not supported on windows (use winget separately)")
 	default:
-		return patchPlanResult{}, fmt.Errorf("unsupported manager %s", opts.manager)
+		return patchPlanResult{}, fmt.Errorf("patch plan not supported on %s", runtime.GOOS)
 	}
 	planSource := "simulate"
 	if err != nil {
@@ -121,6 +141,18 @@ func runPackagePatchPlan(payload json.RawMessage, sudo bool, logFn func(string))
 				plan = fallback
 				planSource = "upgradable"
 				logFn("dry-run returned 0 packages; using dnf check-update fallback")
+			}
+		case "pacman":
+			if fallback, fbErr := listPacmanUpgradablePlan(sudo, opts.securityOnly); fbErr == nil && len(fallback) > 0 {
+				plan = fallback
+				planSource = "upgradable"
+				logFn("dry-run returned 0 packages; using pacman -Qu fallback")
+			}
+		case "apk", "zypper", "emerge", "brew", "pkg":
+			if fallback, fbErr := listUpgradablePlanForManager(sudo, opts.manager, opts.securityOnly); fbErr == nil && len(fallback) > 0 {
+				plan = fallback
+				planSource = "upgradable"
+				logFn("dry-run returned 0 packages; using " + opts.manager + " upgradable fallback")
 			}
 		default:
 			if fallback, fbErr := listAptUpgradablePlan(sudo, opts.securityOnly); fbErr == nil && len(fallback) > 0 {
@@ -382,20 +414,13 @@ func runPackageUpgradeWithRefresh(cli *http.Client, base, token string, payload 
 
 func runPackageUpgradeSafe(payload json.RawMessage, sudo bool, logFn func(string)) (patchUpgradeResult, error) {
 	opts := parsePatchPayload(payload)
-	if opts.manager == "" {
-		opts.manager = "apt"
-	}
+	applyDefaultPatchManager(&opts)
 
 	names := opts.packageNames
 	if len(names) == 0 && (opts.all || opts.securityOnly) {
 		var plan []patchPlanEntry
 		var err error
-		switch opts.manager {
-		case "dnf", "yum":
-			plan, err = listDnfUpgradablePlan(sudo, opts.securityOnly)
-		default:
-			plan, err = listAptUpgradablePlan(sudo, opts.securityOnly)
-		}
+		plan, err = listUpgradablePlanForManager(sudo, opts.manager, opts.securityOnly)
 		if err != nil {
 			return patchUpgradeResult{}, err
 		}
@@ -507,13 +532,7 @@ func pinsForBatch(names []string, pins map[string]string) []map[string]any {
 
 func runPackageUpgrade(payload json.RawMessage, sudo bool, logFn func(string)) (int, error) {
 	opts := parsePatchPayload(payload)
-	if opts.manager == "" {
-		if runtime.GOOS == "windows" {
-			opts.manager = "winget"
-		} else {
-			opts.manager = "apt"
-		}
-	}
+	applyDefaultPatchManager(&opts)
 
 	logFn(fmt.Sprintf("package upgrade manager=%s all=%v securityOnly=%v packages=%d",
 		opts.manager, opts.all, opts.securityOnly, len(opts.packageNames)))
@@ -525,9 +544,27 @@ func runPackageUpgrade(payload json.RawMessage, sudo bool, logFn func(string)) (
 			return upgradeDnf(sudo, opts, logFn)
 		case "apt", "dpkg":
 			return upgradeApt(sudo, opts, logFn)
+		case "pacman":
+			return upgradePacman(sudo, opts, logFn)
+		case "apk":
+			return upgradeApk(sudo, opts, logFn)
+		case "zypper":
+			return upgradeZypper(sudo, opts, logFn)
+		case "emerge":
+			return upgradeEmerge(sudo, opts, logFn)
 		default:
 			return upgradeApt(sudo, opts, logFn)
 		}
+	case "darwin":
+		if opts.manager == "brew" {
+			return upgradeBrew(sudo, opts, logFn)
+		}
+		return 0, fmt.Errorf("unsupported darwin manager %s", opts.manager)
+	case "freebsd", "openbsd", "netbsd":
+		if opts.manager == "pkg" {
+			return upgradePkg(sudo, opts, logFn)
+		}
+		return 0, fmt.Errorf("unsupported bsd manager %s", opts.manager)
 	case "windows":
 		if opts.manager != "winget" {
 			return 0, fmt.Errorf("unsupported windows manager %s", opts.manager)
@@ -621,6 +658,138 @@ func upgradeDnf(sudo bool, opts patchUpgradeOpts, logFn func(string)) (int, erro
 		return 0, err
 	}
 	return parseDnfUpgradeCount(out, 0), nil
+}
+
+func upgradePacman(sudo bool, opts patchUpgradeOpts, logFn func(string)) (int, error) {
+	if _, err := exec.LookPath("pacman"); err != nil {
+		return 0, fmt.Errorf("pacman not found")
+	}
+	if err := streamCommand(logFn, sudo, "pacman", []string{"-Sy"}); err != nil {
+		return 0, err
+	}
+	if len(opts.packageNames) > 0 {
+		args := append([]string{"-S", "--noconfirm"}, opts.packageNames...)
+		if err := streamCommand(logFn, sudo, "pacman", args); err != nil {
+			return 0, err
+		}
+		return len(opts.packageNames), nil
+	}
+	if opts.all {
+		if err := streamCommand(logFn, sudo, "pacman", []string{"-Syu", "--noconfirm"}); err != nil {
+			return 0, err
+		}
+		return 1, nil
+	}
+	return 0, nil
+}
+
+func upgradeApk(sudo bool, opts patchUpgradeOpts, logFn func(string)) (int, error) {
+	if _, err := exec.LookPath("apk"); err != nil {
+		return 0, fmt.Errorf("apk not found")
+	}
+	if err := streamCommand(logFn, sudo, "apk", []string{"update", "--quiet"}); err != nil {
+		return 0, err
+	}
+	if len(opts.packageNames) > 0 {
+		args := append([]string{"add", "--upgrade", "--no-cache"}, opts.packageNames...)
+		if err := streamCommand(logFn, sudo, "apk", args); err != nil {
+			return 0, err
+		}
+		return len(opts.packageNames), nil
+	}
+	if opts.all {
+		if err := streamCommand(logFn, sudo, "apk", []string{"upgrade", "--no-cache"}); err != nil {
+			return 0, err
+		}
+		return 1, nil
+	}
+	return 0, nil
+}
+
+func upgradeZypper(sudo bool, opts patchUpgradeOpts, logFn func(string)) (int, error) {
+	if _, err := exec.LookPath("zypper"); err != nil {
+		return 0, fmt.Errorf("zypper not found")
+	}
+	if len(opts.packageNames) > 0 {
+		args := append([]string{"up", "-y"}, opts.packageNames...)
+		if err := streamCommand(logFn, sudo, "zypper", args); err != nil {
+			return 0, err
+		}
+		return len(opts.packageNames), nil
+	}
+	if opts.securityOnly {
+		if err := streamCommand(logFn, sudo, "zypper", []string{"patch", "-y"}); err != nil {
+			return 0, err
+		}
+		return 1, nil
+	}
+	if opts.all {
+		if err := streamCommand(logFn, sudo, "zypper", []string{"up", "-y"}); err != nil {
+			return 0, err
+		}
+		return 1, nil
+	}
+	return 0, nil
+}
+
+func upgradeEmerge(sudo bool, opts patchUpgradeOpts, logFn func(string)) (int, error) {
+	if _, err := exec.LookPath("emerge"); err != nil {
+		return 0, fmt.Errorf("emerge not found")
+	}
+	if len(opts.packageNames) > 0 {
+		args := append([]string{"-v", "--update"}, opts.packageNames...)
+		if err := streamCommand(logFn, sudo, "emerge", args); err != nil {
+			return 0, err
+		}
+		return len(opts.packageNames), nil
+	}
+	if opts.all {
+		if err := streamCommand(logFn, sudo, "emerge", []string{"-v", "--update", "--deep", "@world"}); err != nil {
+			return 0, err
+		}
+		return 1, nil
+	}
+	return 0, nil
+}
+
+func upgradeBrew(_sudo bool, opts patchUpgradeOpts, logFn func(string)) (int, error) {
+	if _, err := exec.LookPath("brew"); err != nil {
+		return 0, fmt.Errorf("brew not found")
+	}
+	if len(opts.packageNames) > 0 {
+		args := append([]string{"upgrade"}, opts.packageNames...)
+		if err := streamCommand(logFn, false, "brew", args); err != nil {
+			return 0, err
+		}
+		return len(opts.packageNames), nil
+	}
+	if opts.all {
+		if err := streamCommand(logFn, false, "brew", []string{"upgrade"}); err != nil {
+			return 0, err
+		}
+		return 1, nil
+	}
+	return 0, nil
+}
+
+func upgradePkg(sudo bool, opts patchUpgradeOpts, logFn func(string)) (int, error) {
+	if _, err := exec.LookPath("pkg"); err != nil {
+		return 0, fmt.Errorf("pkg not found")
+	}
+	if len(opts.packageNames) > 0 {
+		args := append([]string{"upgrade", "-y"}, opts.packageNames...)
+		if err := streamCommand(logFn, sudo, "pkg", args); err != nil {
+			return 0, err
+		}
+		return len(opts.packageNames), nil
+	}
+	if opts.all {
+		if err := streamCommand(logFn, sudo, "pkg", []string{"upgrade", "-y"}); err != nil {
+			return 0, err
+		}
+		return 1, nil
+	}
+	return 0, nil
 }
 
 func reconcileAptPinVersions(

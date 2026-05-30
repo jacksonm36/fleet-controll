@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import {
+  loadPersistedDeploySessions,
+  persistDeploySessions,
+} from "./binary-deploy-persist.js";
 import { agentMatchesReleaseBuild } from "./binary-upgrade-reconcile.js";
 
 export type BinaryDeployPhase =
@@ -40,13 +44,19 @@ export type BinaryDeploySession = {
 const MAX_SESSIONS = 12;
 const MAX_EVENTS_PER_SESSION = 600;
 
-const sessions: BinaryDeploySession[] = [];
-let activeSessionId: string | null = null;
+const sessions: BinaryDeploySession[] = loadPersistedDeploySessions();
+let activeSessionId: string | null =
+  sessions.find((s) => s.status === "running")?.id ?? sessions[0]?.id ?? null;
+
+function saveDeploySessions() {
+  persistDeploySessions(sessions);
+}
 
 function trimSessions() {
   while (sessions.length > MAX_SESSIONS) {
     sessions.pop();
   }
+  saveDeploySessions();
 }
 
 function findSession(sessionId?: string | null): BinaryDeploySession | null {
@@ -66,6 +76,32 @@ function findSessionByBuild(buildId: string): BinaryDeploySession | null {
   );
   if (running) return running;
   return sessions.find((s) => s.buildId.toLowerCase().trim() === key) ?? null;
+}
+
+/** Route agent events to the active rollout, not a completed session with a stale build id. */
+function findSessionForDeployEvent(input: {
+  buildId?: string | null;
+  hostname?: string | null;
+  sessionId?: string | null;
+}): BinaryDeploySession | null {
+  if (input.sessionId) {
+    return sessions.find((s) => s.id === input.sessionId) ?? null;
+  }
+  const host = input.hostname?.trim();
+  if (host) {
+    const byHost = sessions.find(
+      (s) => s.status === "running" && s.targetHostnames.includes(host),
+    );
+    if (byHost) return byHost;
+  }
+  const key = input.buildId?.toLowerCase().trim();
+  if (key) {
+    const running = sessions.find(
+      (s) => s.status === "running" && s.buildId.toLowerCase().trim() === key,
+    );
+    if (running) return running;
+  }
+  return getActiveBinaryDeploySession();
 }
 
 function mergeTargetHostnames(
@@ -150,6 +186,7 @@ export function startBinaryDeploySession(input: {
   sessions.unshift(session);
   activeSessionId = session.id;
   trimSessions();
+  saveDeploySessions();
   appendBinaryDeployEvent({
     sessionId: session.id,
     buildId: session.buildId,
@@ -170,9 +207,11 @@ export function appendBinaryDeployEvent(input: {
   level?: BinaryDeployEventLevel;
   message: string;
 }): BinaryDeployEvent | null {
-  let session =
-    findSession(input.sessionId) ??
-    (input.buildId ? findSessionByBuild(input.buildId) : null);
+  let session = findSessionForDeployEvent({
+    sessionId: input.sessionId,
+    buildId: input.buildId,
+    hostname: input.hostname,
+  });
 
   if (!session && input.buildId?.trim()) {
     session = ensureBinaryDeploySession({
@@ -202,6 +241,7 @@ export function appendBinaryDeployEvent(input: {
   if (session.events.length > MAX_EVENTS_PER_SESSION) {
     session.events.splice(0, session.events.length - MAX_EVENTS_PER_SESSION);
   }
+  saveDeploySessions();
   return event;
 }
 
@@ -210,7 +250,14 @@ export function getBinaryDeploySession(sessionId?: string | null) {
 }
 
 export function getActiveBinaryDeploySession() {
-  return findSession(activeSessionId);
+  const running = sessions.find((s) => s.status === "running");
+  if (running) return running;
+  return sessions[0] ?? null;
+}
+
+/** Most recent session (running, completed, or failed) for the deploy console. */
+export function getLatestBinaryDeploySession() {
+  return sessions[0] ?? null;
 }
 
 export function listBinaryDeploySessions(limit = 8) {
@@ -315,6 +362,7 @@ export function refreshBinaryDeploySessionStatus(
       level: "success",
       message: `Deployment finished (${relevant.length}/${relevant.length} agents on ${session.buildId})`,
     });
+    saveDeploySessions();
     return session;
   }
 
@@ -329,6 +377,7 @@ export function refreshBinaryDeploySessionStatus(
       level: "warn",
       message: `Deployment finished with failures (${ok}/${relevant.length} succeeded)`,
     });
+    saveDeploySessions();
   }
 
   return session;
@@ -340,10 +389,26 @@ export function noteBinaryDeployHeartbeatSuccess(input: {
   buildId: string;
   version: string;
 }) {
+  const session = findSessionForDeployEvent({
+    buildId: input.buildId,
+    hostname: input.hostname,
+  });
+  if (!session || session.status !== "running") return;
+
+  const already = session.events.some(
+    (e) =>
+      e.hostname === input.hostname &&
+      e.phase === "online" &&
+      e.level === "success" &&
+      e.message.includes("is online on"),
+  );
+  if (already) return;
+
   const plus = input.version.indexOf("+");
   const semver = plus > 0 ? input.version.slice(0, plus) : input.version;
   appendBinaryDeployEvent({
-    buildId: input.buildId,
+    sessionId: session.id,
+    buildId: session.buildId,
     version: semver,
     agentId: input.agentId,
     hostname: input.hostname,
@@ -360,15 +425,6 @@ export function noteBinaryDeployFailure(input: {
   version?: string | null;
   message: string;
 }) {
-  const bid = input.buildId?.trim();
-  if (bid) {
-    const session = findSessionByBuild(bid);
-    if (session && session.status !== "running") {
-      session.status = "running";
-      session.finishedAt = null;
-      activeSessionId = session.id;
-    }
-  }
   appendBinaryDeployEvent({
     buildId: input.buildId,
     version: input.version,
@@ -449,13 +505,8 @@ export function mergeDeployEventLog(
     deployState: BinaryDeployAgentState;
   }>,
 ): BinaryDeployEvent[] {
-  const synthesized = synthesizeDeployEventsFromAgents(session, agents);
-  if (!session.events.length) return synthesized;
-  const seen = new Set(
-    session.events.map((e) => `${e.hostname ?? ""}:${e.phase}:${e.level}`),
-  );
-  const extra = synthesized.filter(
-    (e) => !seen.has(`${e.hostname ?? ""}:${e.phase}:${e.level}`),
-  );
-  return [...session.events, ...extra];
+  if (session.events.length > 0) {
+    return session.events;
+  }
+  return synthesizeDeployEventsFromAgents(session, agents);
 }

@@ -1,4 +1,4 @@
-import type { FastifyReply } from "fastify";
+import type { AppReply } from "../types/app-instance.js";
 import { fleetRequireTls, isProduction } from "./env.js";
 
 export const SESSION_COOKIE = "fleet_session";
@@ -31,10 +31,10 @@ export function sessionCookieOptions() {
   };
 }
 
-export function setSessionCookie(reply: FastifyReply, token: string): void {
+export function setSessionCookie(reply: AppReply, token: string): void {
   reply.setCookie(SESSION_COOKIE, token, sessionCookieOptions());
 }
 
-export function clearSessionCookie(reply: FastifyReply): void {
+export function clearSessionCookie(reply: AppReply): void {
   reply.clearCookie(SESSION_COOKIE, sessionCookieOptions());
 }

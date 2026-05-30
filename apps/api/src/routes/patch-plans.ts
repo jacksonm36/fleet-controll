@@ -1,6 +1,6 @@
 import { prisma } from "@fleet/db";
 import type { JobType } from "@prisma/client";
-import type { FastifyInstance } from "fastify";
+import type { AppInstance } from "../types/app-instance.js";
 import { z } from "zod";
 import { invalidateFleetCaches } from "../lib/cache.js";
 import { notifyAgent } from "../lib/agent-sockets.js";
@@ -17,7 +17,7 @@ const approveSchema = z.object({
   packageNames: z.array(z.string()).optional(),
 });
 
-export async function patchPlansRoutes(app: FastifyInstance) {
+export async function patchPlansRoutes(app: AppInstance) {
   app.get(
     "/",
     { preHandler: requireUser },

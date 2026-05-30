@@ -55,6 +55,36 @@ export function fleetPublicHost(): string | null {
   return h || null;
 }
 
+/** off | optional | required — optional mTLS never breaks bearer-only agents. */
+export function fleetAgentMtlsMode(): "off" | "optional" | "required" {
+  const raw = process.env.FLEET_AGENT_MTLS?.trim().toLowerCase();
+  if (!raw || raw === "0" || raw === "false" || raw === "no" || raw === "off") {
+    return "off";
+  }
+  if (raw === "required" || raw === "strict") return "required";
+  return "optional";
+}
+
+export function fleetAgentMtlsIssueOnEnroll(): boolean {
+  const raw = process.env.FLEET_AGENT_MTLS_ISSUE?.trim().toLowerCase();
+  if (raw === "0" || raw === "false" || raw === "no") return false;
+  if (raw === "1" || raw === "true" || raw === "yes") return true;
+  return fleetAgentMtlsMode() !== "off";
+}
+
+/** When true, install scripts fetch /api/public/tls-pin.json into FLEET_TLS_PIN. */
+export function fleetTlsPinAuto(): boolean {
+  const raw = process.env.FLEET_TLS_PIN_AUTO?.trim().toLowerCase();
+  if (raw === "0" || raw === "false" || raw === "no") return false;
+  return true;
+}
+
+/** Passed to agents as FLEET_TLS_MIN_VERSION (e.g. 1.3). Empty = agent default (1.2). */
+export function fleetTlsMinVersionForAgents(): string | null {
+  const v = process.env.FLEET_TLS_MIN_VERSION?.trim();
+  return v || null;
+}
+
 export function fleetHstsEnabled(): boolean {
   const raw = process.env.FLEET_HSTS?.trim().toLowerCase();
   if (raw === "1" || raw === "true") return true;

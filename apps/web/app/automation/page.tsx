@@ -160,7 +160,7 @@ export default function AutomationPage() {
     setFormContent(selected.content);
     setFormTags(selected.tags.join(", "));
     setJobType(defaultJobTypeForTool(selected.tool));
-  }, [selected?.id]);
+  }, [selected]);
 
   useEffect(() => {
     const types = jobTypesForTool(formTool);

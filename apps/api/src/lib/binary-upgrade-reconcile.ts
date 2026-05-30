@@ -17,7 +17,7 @@ function upgradeStaleMs(inProgress: boolean): number {
   return inProgress ? BINARY_UPGRADE_IN_PROGRESS_STALE_MS : BINARY_UPGRADE_STALE_MS;
 }
 
-function isUpgradeStale(input: {
+export function isBinaryUpgradeStale(input: {
   binaryUpgradeInProgress: boolean;
   binaryUpgradeStartedAt: Date | null;
   lastSeenAt: Date | null;
@@ -50,7 +50,7 @@ export async function reconcileBinaryUpgradeFlags(input: {
   });
   if (!agent?.binaryUpgradeInProgress) return;
 
-  if (!isUpgradeStale(agent)) return;
+  if (!isBinaryUpgradeStale(agent)) return;
 
   await prisma.agent.update({
     where: { id: input.agentId },
@@ -70,13 +70,14 @@ export async function reconcileAllStaleBinaryUpgrades(): Promise<number> {
     where: { binaryUpgradeInProgress: true },
     select: {
       id: true,
+      binaryUpgradeInProgress: true,
       binaryUpgradeLastError: true,
       binaryUpgradeStartedAt: true,
       lastSeenAt: true,
     },
   });
 
-  const stale = inProgress.filter((a) => isUpgradeStale(a));
+  const stale = inProgress.filter((a) => isBinaryUpgradeStale(a));
   if (!stale.length) return 0;
 
   await prisma.$transaction(
@@ -95,6 +96,15 @@ export async function reconcileAllStaleBinaryUpgrades(): Promise<number> {
     ),
   );
   return stale.length;
+}
+
+/** True while an agent is mid-rollout and has not timed out. */
+export function agentBinaryUpgradeBusy(input: {
+  binaryUpgradeInProgress: boolean;
+  binaryUpgradeStartedAt: Date | null;
+  lastSeenAt: Date | null;
+}): boolean {
+  return input.binaryUpgradeInProgress && !isBinaryUpgradeStale(input);
 }
 
 export function agentMatchesReleaseBuild(

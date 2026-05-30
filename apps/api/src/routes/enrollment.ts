@@ -1,10 +1,10 @@
 import { prisma } from "@fleet/db";
-import type { FastifyInstance } from "fastify";
+import type { AppInstance } from "../types/app-instance.js";
 import { z } from "zod";
 import { hashToken, randomEnrollmentToken } from "../lib/crypto.js";
 import { assertOperator, requireUser } from "../middleware/auth.js";
 
-export async function enrollmentRoutes(app: FastifyInstance) {
+export async function enrollmentRoutes(app: AppInstance) {
   app.post(
     "/",
     { preHandler: requireUser },

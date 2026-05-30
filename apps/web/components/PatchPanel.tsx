@@ -128,6 +128,7 @@ export function PatchPanel({
   onKernelMaintenance,
   rebootRequired,
   kernelRunning,
+  kernelInstalled,
   onInstall,
   onCancel,
   onSelectPlan,
@@ -154,9 +155,10 @@ export function PatchPanel({
   setAckReboot: (v: boolean) => void;
   actionBusy: string | null;
   onCheckUpdates: () => void;
-  onKernelMaintenance?: () => void;
+  onKernelMaintenance?: (rebootOnly: boolean) => void;
   rebootRequired?: boolean;
   kernelRunning?: string | null;
+  kernelInstalled?: string | null;
   onInstall: () => void;
   onCancel: (planId: string) => void;
   onSelectPlan: (plan: PatchPlanLike) => void;
@@ -185,6 +187,15 @@ export function PatchPanel({
     agentHostname.length > 0;
   const [kernelModalOpen, setKernelModalOpen] = useState(false);
   const [kernelAck, setKernelAck] = useState(false);
+  const kernelRebootOnly =
+    (kernelUpdatePending || rebootRequired) && (packageUpdatesPending ?? 0) === 0;
+  const kernelActionLabel = kernelRebootOnly
+    ? "Reboot for new kernel"
+    : "Install kernel & reboot";
+  const openKernelModal = () => {
+    setKernelAck(false);
+    setKernelModalOpen(true);
+  };
 
   return (
     <div className="space-y-4">
@@ -196,7 +207,13 @@ export function PatchPanel({
           </div>
           <div className="text-xs text-white/50">from last inventory scan</div>
         </div>
-        <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4">
+        <div
+          className={`rounded-lg border p-4 ${
+            showKernelRestart
+              ? "border-amber-500/35 bg-amber-500/5"
+              : "border-[hsl(var(--border))] bg-[hsl(var(--card))]"
+          }`}
+        >
           <div className="text-xs uppercase text-white/45">Kernel</div>
           <div className="mt-1 text-sm font-medium">
             {kernelUpdatePending ? (
@@ -205,7 +222,28 @@ export function PatchPanel({
               <span className="text-emerald-400">Up to date</span>
             )}
           </div>
-          <div className="text-xs text-white/50">reboot needed after kernel patches</div>
+          <div className="mt-1 text-xs text-white/50">
+            {kernelRunning ? (
+              <span className="font-mono text-white/60">running {kernelRunning}</span>
+            ) : (
+              "reboot needed after kernel patches"
+            )}
+          </div>
+          {kernelInstalled && kernelInstalled !== kernelRunning ? (
+            <div className="mt-0.5 text-xs text-amber-200/80">
+              installed <span className="font-mono">{kernelInstalled}</span>
+            </div>
+          ) : null}
+          {showKernelRestart ? (
+            <button
+              type="button"
+              disabled={!!actionBusy}
+              className="mt-3 w-full rounded-md border border-amber-500/50 bg-amber-500/20 px-3 py-2 text-xs font-semibold text-amber-100 hover:bg-amber-500/30 disabled:opacity-50"
+              onClick={openKernelModal}
+            >
+              {actionBusy === "kernel" ? "Working…" : kernelActionLabel}
+            </button>
+          ) : null}
         </div>
         <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4">
           <div className="text-xs uppercase text-white/45">Known CVEs</div>
@@ -259,14 +297,23 @@ export function PatchPanel({
         />
 
         {step === "up_to_date" ? (
-          <div className="rounded-md border border-emerald-500/25 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
-            {agentHostname} is up to date — {managerLabel(activePlan?.manager ?? "apt")} reports
-            no pending upgrades.
-            {cveCount ? (
-              <span className="block mt-1 text-emerald-200/80">
-                {cveCount} CVEs are still tracked. Run another check if you
-                refreshed inventory or expect new security fixes.
-              </span>
+          <div className="space-y-2">
+            <div className="rounded-md border border-emerald-500/25 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+              {agentHostname} is up to date — {managerLabel(activePlan?.manager ?? "apt")}{" "}
+              reports no pending upgrades.
+              {cveCount ? (
+                <span className="block mt-1 text-emerald-200/80">
+                  {cveCount} CVEs are still tracked. Run another check if you
+                  refreshed inventory or expect new security fixes.
+                </span>
+              ) : null}
+            </div>
+            {showKernelRestart ? (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                A kernel update or reboot is still required — regular package previews
+                do not include kernel metapackages. Use{" "}
+                <strong>{kernelActionLabel}</strong> in the Kernel card or below.
+              </div>
             ) : null}
           </div>
         ) : null}
@@ -441,14 +488,9 @@ export function PatchPanel({
                 type="button"
                 disabled={!!actionBusy}
                 className="rounded-md border border-amber-500/50 bg-amber-500/15 px-4 py-2 text-sm font-semibold text-amber-100 hover:bg-amber-500/25 disabled:opacity-50"
-                onClick={() => {
-                  setKernelAck(false);
-                  setKernelModalOpen(true);
-                }}
+                onClick={openKernelModal}
               >
-                {actionBusy === "kernel"
-                  ? "Kernel update & reboot…"
-                  : "Install kernel & reboot"}
+                {actionBusy === "kernel" ? "Working…" : kernelActionLabel}
               </button>
             ) : null}
           </div>
@@ -481,6 +523,13 @@ export function PatchPanel({
               {kernelRunning ? (
                 <p className="text-xs text-white/55">
                   Running kernel: <span className="font-mono">{kernelRunning}</span>
+                  {kernelInstalled ? (
+                    <>
+                      {" "}
+                      · installed{" "}
+                      <span className="font-mono">{kernelInstalled}</span>
+                    </>
+                  ) : null}
                 </p>
               ) : null}
             </div>
@@ -510,10 +559,12 @@ export function PatchPanel({
                 className="rounded-md bg-amber-500 px-4 py-2 text-sm font-semibold text-black hover:opacity-90 disabled:opacity-50"
                 onClick={() => {
                   setKernelModalOpen(false);
-                  onKernelMaintenance();
+                  onKernelMaintenance(!!kernelRebootOnly);
                 }}
               >
-                Install kernel &amp; reboot now
+                {kernelRebootOnly
+                  ? "Reboot now"
+                  : "Install kernel & reboot now"}
               </button>
             </div>
           </div>

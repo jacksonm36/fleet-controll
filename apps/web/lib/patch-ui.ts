@@ -99,11 +99,21 @@ export function planStatusTone(status: string): string {
   }
 }
 
-/** Prefer the job that is actively running for patch check or install. */
+type LiveJobRow = { id: string; type: string; status: string };
+
+/** Prefer the job that is actively running (kernel maintenance, patch check, or install). */
 export function liveJobIdForPlan(
   plan: PatchPlanLike | null,
   plans: PatchPlanLike[],
+  jobs: LiveJobRow[] = [],
 ): string | null {
+  const kernelJob = jobs.find(
+    (j) =>
+      j.type === "HOST_KERNEL_MAINTENANCE" &&
+      (j.status === "QUEUED" || j.status === "RUNNING"),
+  );
+  if (kernelJob) return kernelJob.id;
+
   const scanning = plans.find((p) => p.status === "PENDING_DRY_RUN");
   if (scanning?.dryRunJobId) return scanning.dryRunJobId;
   if (plan?.status === "APPROVED" && plan.executeJobId) return plan.executeJobId;

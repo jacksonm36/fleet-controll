@@ -50,8 +50,12 @@ export default function AgentsPage() {
   const [rows, setRows] = useState<AgentRow[]>([]);
   const [release, setRelease] = useState<AgentReleaseInfo | null>(null);
   const [pushing, setPushing] = useState(false);
+  const [rollingTls, setRollingTls] = useState(false);
+  const [rolloutTlsMsg, setRolloutTlsMsg] = useState<string | null>(null);
   const [pushMsg, setPushMsg] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const [renaming, setRenaming] = useState<AgentRow | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
@@ -92,10 +96,66 @@ export default function AgentsPage() {
     try {
       await apiFetch(`/api/agents/${agent.id}`, { method: "DELETE" });
       setRows((prev) => prev.filter((r) => r.id !== agent.id));
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(agent.id);
+        return next;
+      });
     } catch (e) {
       alert(e instanceof Error ? e.message : "Delete failed");
     } finally {
       setDeletingId(null);
+    }
+  }
+
+  function toggleSelected(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    if (selectedIds.size === rows.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(rows.map((r) => r.id)));
+    }
+  }
+
+  async function removeSelectedAgents() {
+    const selected = rows.filter((r) => selectedIds.has(r.id));
+    if (!selected.length) return;
+    const names = selected.map((a) => a.hostname).join(", ");
+    const preview =
+      selected.length > 5
+        ? `${selected.slice(0, 5).map((a) => a.hostname).join(", ")} and ${selected.length - 5} more`
+        : names;
+    const msg = `Remove ${selected.length} agent(s) from Fleet?\n\n${preview}\n\nThis deletes inventory, jobs, and API credentials. Agent processes on hosts are not stopped automatically.`;
+    if (!confirm(msg)) return;
+    setBulkDeleting(true);
+    try {
+      const res = await apiFetch<{ deleted: number; notFound: string[] }>(
+        "/api/agents/bulk-delete",
+        {
+          method: "POST",
+          body: JSON.stringify({ ids: selected.map((a) => a.id) }),
+        },
+      );
+      const removed = new Set(
+        selected.map((a) => a.id).filter((id) => !res.notFound.includes(id)),
+      );
+      setRows((prev) => prev.filter((r) => !removed.has(r.id)));
+      setSelectedIds(new Set(res.notFound));
+      if (res.notFound.length) {
+        alert(`Removed ${res.deleted} agent(s). ${res.notFound.length} were already gone.`);
+      }
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Bulk delete failed");
+    } finally {
+      setBulkDeleting(false);
     }
   }
 
@@ -118,6 +178,28 @@ export default function AgentsPage() {
       .then(setRelease)
       .catch(() => setRelease(null));
   }, [hydrated, authed, loadAgents]);
+
+  async function rolloutAgentTls() {
+    setRollingTls(true);
+    setRolloutTlsMsg(null);
+    try {
+      const res = await apiFetch<{
+        queued: number;
+        skippedOffline: number;
+        hint?: string;
+      }>("/api/fleet/rollout-agent-tls", {
+        method: "POST",
+        body: JSON.stringify({ queueJobs: true }),
+      });
+      setRolloutTlsMsg(
+        `Queued TLS fix on ${res.queued} online agent(s) (${res.skippedOffline} offline skipped).`,
+      );
+    } catch (e) {
+      setRolloutTlsMsg(e instanceof Error ? e.message : "TLS rollout failed");
+    } finally {
+      setRollingTls(false);
+    }
+  }
 
   async function pushBinaryUpdate() {
     setPushing(true);
@@ -196,28 +278,66 @@ export default function AgentsPage() {
           outdatedCount={outdatedCount}
           pushMsg={pushMsg}
           pushing={pushing}
+          rollingTls={rollingTls}
+          rolloutTlsMsg={rolloutTlsMsg}
+          onRolloutTls={() => void rolloutAgentTls()}
           onPush={() => void pushBinaryUpdate()}
           onOpenConsole={() => {
-            setDeploySessionId(null);
             setConsoleOpen(true);
             void apiFetch<{ session: { id: string } | null }>(
               "/api/agents/binary-deploy/active",
               { cacheTtlMs: 0 },
             )
               .then((snap) => {
-                if (snap.session?.id) setDeploySessionId(snap.session.id);
+                setDeploySessionId(snap.session?.id ?? null);
               })
-              .catch(() => {});
+              .catch(() => {
+                setDeploySessionId(null);
+              });
           }}
         />
 
         <div className="overflow-hidden rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
-          <div className="border-b border-white/10 px-4 py-2 text-xs uppercase text-white/45">
-            Enrolled agents
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-4 py-2">
+            <span className="text-xs uppercase text-white/45">Enrolled agents</span>
+            {rows.length > 0 ? (
+              <div className="flex items-center gap-2">
+                {selectedIds.size > 0 ? (
+                  <span className="text-xs text-white/50">
+                    {selectedIds.size} selected
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  disabled={selectedIds.size === 0 || bulkDeleting || !!deletingId}
+                  onClick={() => void removeSelectedAgents()}
+                  className="rounded-md border border-red-500/40 px-3 py-1 text-xs text-red-300 hover:bg-red-500/15 disabled:opacity-40"
+                >
+                  {bulkDeleting ? "Removing…" : "Delete selected"}
+                </button>
+              </div>
+            ) : null}
           </div>
           <table className="w-full border-collapse text-sm">
             <thead className="bg-white/5 text-left text-xs uppercase text-white/50">
               <tr>
+                <th className="w-10 px-3 py-3">
+                  {rows.length > 0 ? (
+                    <input
+                      type="checkbox"
+                      checked={rows.length > 0 && selectedIds.size === rows.length}
+                      ref={(el) => {
+                        if (el) {
+                          el.indeterminate =
+                            selectedIds.size > 0 && selectedIds.size < rows.length;
+                        }
+                      }}
+                      onChange={toggleSelectAll}
+                      aria-label="Select all agents"
+                      className="rounded border-white/30"
+                    />
+                  ) : null}
+                </th>
                 <th className="px-4 py-3">Hostname</th>
                 <th className="px-4 py-3">OS</th>
                 <th className="px-4 py-3">Enrolled</th>
@@ -245,6 +365,15 @@ export default function AgentsPage() {
                 return (
                 <Fragment key={a.id}>
                   <tr className="border-t border-white/5 hover:bg-white/5">
+                  <td className="px-3 py-3">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(a.id)}
+                      onChange={() => toggleSelected(a.id)}
+                      aria-label={`Select ${a.hostname}`}
+                      className="rounded border-white/30"
+                    />
+                  </td>
                   <td className="px-4 py-3 font-medium">
                     <Link className="text-[hsl(var(--accent))]" href={`/agents/${a.id}`}>
                       {a.hostname}
@@ -354,7 +483,7 @@ export default function AgentsPage() {
                   </tr>
                   {showProgress ? (
                     <tr className="border-t border-white/5">
-                      <td colSpan={11} className="px-4 py-2">
+                      <td colSpan={12} className="px-4 py-2">
                         <div className="rounded-md bg-white/5 p-2">
                           <div className="text-xs text-amber-200">
                             {a.upgradeInProgress
@@ -388,7 +517,7 @@ export default function AgentsPage() {
               )})}
               {!rows.length ? (
                 <tr>
-                  <td className="px-4 py-6 text-white/60" colSpan={11}>
+                  <td className="px-4 py-6 text-white/60" colSpan={12}>
                     No agents enrolled yet — expand <strong>Enroll new agent</strong> above to mint a token and install.
                   </td>
                 </tr>

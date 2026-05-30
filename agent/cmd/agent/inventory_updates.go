@@ -3,9 +3,41 @@ package main
 import (
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 )
+
+var linuxKernelUpstreamRe = regexp.MustCompile(`(\d+\.\d+\.\d+)`)
+
+func linuxKernelUpstreamVersion(s string) string {
+	m := linuxKernelUpstreamRe.FindStringSubmatch(strings.TrimSpace(s))
+	if len(m) >= 2 {
+		return m[1]
+	}
+	return ""
+}
+
+func kernelImagesAligned(running, installed string) bool {
+	running = strings.TrimSpace(running)
+	installed = strings.TrimSpace(installed)
+	if running == "" || installed == "" {
+		return running == installed
+	}
+	if running == installed {
+		return true
+	}
+	if strings.HasPrefix(running, installed) || strings.HasPrefix(installed, running) {
+		return true
+	}
+	ru := linuxKernelUpstreamVersion(running)
+	iu := linuxKernelUpstreamVersion(installed)
+	if ru != "" && ru == iu {
+		// Debian: uname 6.12.90+deb13.1-amd64 vs dpkg image 6.12.90-2 share upstream 6.12.90
+		return true
+	}
+	return false
+}
 
 type pendingUpdate struct {
 	name      string
@@ -51,20 +83,25 @@ func kernelRelease() string {
 }
 
 func linuxKernelUpdateState(sudo bool) (latestInstalled string, updatePending bool) {
-	// Kernel metapackages pending via apt
 	if pending := aptKernelUpgradesPending(sudo); pending {
 		return "", true
 	}
-	// Installed image newer than running → reboot needed
+	if hostRebootRequired() {
+		latest := newestInstalledKernelImage(sudo)
+		return latest, true
+	}
 	running := kernelRelease()
 	if running == "" {
 		return "", false
 	}
 	latest := newestInstalledKernelImage(sudo)
-	if latest != "" && latest != running && !strings.HasPrefix(running, latest) {
-		return latest, true
+	if latest == "" {
+		return "", false
 	}
-	return latest, false
+	if kernelImagesAligned(running, latest) {
+		return latest, false
+	}
+	return latest, true
 }
 
 func aptKernelUpgradesPending(sudo bool) bool {
@@ -132,11 +169,21 @@ func collectPendingUpdates(sudo bool) []pendingUpdate {
 	case "linux":
 		var all []pendingUpdate
 		all = append(all, collectAptUpgradable(sudo)...)
-		all = append(all, collectDnfUpgradable(sudo)...)
+		if !skipDnfUpgrades() {
+			all = append(all, collectDnfUpgradable(sudo)...)
+		}
+		all = append(all, collectZypperUpgradable(sudo)...)
+		all = append(all, collectPacmanUpgradable(sudo)...)
+		all = append(all, collectApkUpgradable(sudo)...)
+		all = append(all, collectEmergeUpgradable(sudo)...)
 		all = append(all, collectSnapUpgradable()...)
 		return all
 	case "windows":
 		return collectWingetUpgradable()
+	case "darwin":
+		return collectBrewUpgradable()
+	case "freebsd", "openbsd", "netbsd":
+		return collectPkgUpgradable(sudo)
 	default:
 		return nil
 	}
