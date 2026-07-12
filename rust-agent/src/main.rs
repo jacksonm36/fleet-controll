@@ -1,17 +1,30 @@
 mod client;
+mod inventory_os;
+mod inventory_pkg;
+mod pkgmgr_detect;
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 use crate::client::FleetClient;
+
+#[derive(Subcommand)]
+enum Command {
+    /// Collect host inventory (OS detail, apt/dpkg packages) and print as JSON, then exit.
+    /// Does not talk to the controller — local, read-only host inspection.
+    Inventory,
+}
 
 /// Fleet control-plane agent — enroll, heartbeat, inventory, long-poll jobs.
 #[derive(Parser)]
 #[command(name = "fleet-agent")]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     #[arg(long, env = "FLEET_CENTRAL_URL", default_value = "http://127.0.0.1:4000")]
     central: String,
 
@@ -69,6 +82,25 @@ fn resolve_hostname(hostname: Option<String>) -> anyhow::Result<String> {
         .map_err(|_| anyhow::anyhow!("hostname is invalid UTF-8"))
 }
 
+fn print_inventory() -> anyhow::Result<()> {
+    let os_detail = inventory_os::collect_os_detail();
+    let patch_manager = pkgmgr_detect::detect_linux_patch_manager();
+    let mut packages = inventory_pkg::collect_dpkg_packages();
+    let pending = inventory_pkg::collect_apt_upgradable();
+    inventory_pkg::apply_pending_to_packages(&mut packages, &pending);
+
+    let payload = serde_json::json!({
+        "schemaVersion": 1,
+        "collectedAt": chrono::Utc::now().to_rfc3339(),
+        "osDetail": os_detail,
+        "patchManager": patch_manager,
+        "packageUpdatesPending": pending.len(),
+        "packages": packages,
+    });
+    println!("{}", serde_json::to_string_pretty(&payload)?);
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -80,6 +112,11 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
+
+    if matches!(args.command, Some(Command::Inventory)) {
+        return print_inventory();
+    }
+
     let client = FleetClient::new(&args.central)?;
 
     let token_path = args.token_file.clone().unwrap_or_else(default_token_file);

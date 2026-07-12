@@ -109,9 +109,9 @@ func aptKernelUpgradesPending(sudo bool) bool {
 		return false
 	}
 	args := []string{"list", "--upgradable"}
-	cmd := exec.Command("apt-get", args...)
+	cmd := exec.Command("apt", args...)
 	if sudo && os.Geteuid() != 0 {
-		cmd = exec.Command("sudo", append([]string{"-n", "apt-get"}, args...)...)
+		cmd = exec.Command("sudo", append([]string{"-n", "apt"}, args...)...)
 	}
 	out, err := cmd.Output()
 	if err != nil {
@@ -195,9 +195,9 @@ func collectAptUpgradable(sudo bool) []pendingUpdate {
 	}
 	_ = runQuiet(sudo, "apt-get", "update", "-qq")
 	args := []string{"list", "--upgradable"}
-	cmd := exec.Command("apt-get", args...)
+	cmd := exec.Command("apt", args...)
 	if sudo && os.Geteuid() != 0 {
-		cmd = exec.Command("sudo", append([]string{"-n", "apt-get"}, args...)...)
+		cmd = exec.Command("sudo", append([]string{"-n", "apt"}, args...)...)
 	}
 	out, err := cmd.Output()
 	if err != nil {
