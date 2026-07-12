@@ -99,7 +99,14 @@ func runAnsiblePlaybook(payload json.RawMessage, sudo bool, logFn func(string)) 
 
 	ansible, err := exec.LookPath("ansible-playbook")
 	if err != nil {
-		return fmt.Errorf("ansible-playbook not found on PATH")
+		logFn("ansible-playbook not found; installing...")
+		if installErr := ensureAnsible(sudo); installErr != nil {
+			return fmt.Errorf("ansible-playbook not found and auto-install failed: %w", installErr)
+		}
+		ansible, err = exec.LookPath("ansible-playbook")
+		if err != nil {
+			return fmt.Errorf("ansible-playbook still not found after install")
+		}
 	}
 
 	dir, err := os.MkdirTemp("", "fleet-ansible-*")
@@ -150,7 +157,14 @@ func runAnsibleAdhoc(payload json.RawMessage, sudo bool, logFn func(string)) err
 
 	ansible, err := exec.LookPath("ansible")
 	if err != nil {
-		return fmt.Errorf("ansible not found on PATH")
+		logFn("ansible not found; installing...")
+		if installErr := ensureAnsible(sudo); installErr != nil {
+			return fmt.Errorf("ansible not found and auto-install failed: %w", installErr)
+		}
+		ansible, err = exec.LookPath("ansible")
+		if err != nil {
+			return fmt.Errorf("ansible still not found after install")
+		}
 	}
 
 	cmdArgs := []string{inventory, "-m", module, "-a", args}
@@ -181,7 +195,14 @@ func runTerraformJob(jobType string, payload json.RawMessage, sudo bool, logFn f
 	} else {
 		p, err := exec.LookPath("terraform")
 		if err != nil {
-			return fmt.Errorf("terraform not found on PATH")
+			logFn("terraform not found; installing...")
+			if installErr := ensureTerraform(sudo); installErr != nil {
+				return fmt.Errorf("terraform not found and auto-install failed: %w", installErr)
+			}
+			p, err = exec.LookPath("terraform")
+			if err != nil {
+				return fmt.Errorf("terraform still not found after install")
+			}
 		}
 		bin = p
 	}

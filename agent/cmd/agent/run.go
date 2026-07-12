@@ -79,6 +79,16 @@ func runAgent() {
 	httpClient := newSecureHTTPClient(45*time.Second, centralURL)
 	sudo := strings.EqualFold(useSudo, "true")
 
+	// Bootstrap Ansible and Terraform in the background so job handlers work without manual installation.
+	go func() {
+		if err := ensureAnsible(sudo); err != nil {
+			log.Printf("bootstrap: ansible: %v", err)
+		}
+		if err := ensureTerraform(sudo); err != nil {
+			log.Printf("bootstrap: terraform: %v", err)
+		}
+	}()
+
 	runAgentSelfHeal(httpClient, centralURL, apiToken)
 	startSelfHealLoop(httpClient, centralURL, apiToken)
 
