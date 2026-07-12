@@ -22,23 +22,6 @@ func runAgent() {
 	useSudo := getenvDefault("FLEET_USE_SUDO", autoSudoDefault())
 	skipCrowdSec := getenvDefault("FLEET_SKIP_CROWDSEC", "false") == "true"
 
-	for _, arg := range os.Args[1:] {
-		switch {
-		case strings.HasPrefix(arg, "-central="):
-			centralURL = strings.TrimPrefix(arg, "-central=")
-		case strings.HasPrefix(arg, "-enroll-token="):
-			enrollToken = strings.TrimPrefix(arg, "-enroll-token=")
-		case strings.HasPrefix(arg, "-token="):
-			apiToken = strings.TrimPrefix(arg, "-token=")
-		case strings.HasPrefix(arg, "-token-file="):
-			tokenFile = strings.TrimPrefix(arg, "-token-file=")
-		case strings.HasPrefix(arg, "-hostname="):
-			hostnameFlag = strings.TrimPrefix(arg, "-hostname=")
-		case strings.HasPrefix(arg, "-version="):
-			versionFlag = strings.TrimPrefix(arg, "-version=")
-		}
-	}
-
 	if enrollToken != "" {
 		tok, err := enrollAgent(centralURL, enrollToken, hostnameFlag, versionFlag)
 		if err != nil {

@@ -5,10 +5,23 @@ import type { AppInstance } from "../types/app-instance.js";
 import { clientIpFromRequest } from "../lib/client-ip.js";
 import { cspReportOnlyEnabled, fleetHstsEnabled, isProduction } from "../lib/env.js";
 
-function globalRateLimitMax(): number {
+/** Exported for unit testing; also used directly by registerSecurityPlugins. */
+export function globalRateLimitMax(): number {
   const n = Number(process.env.RATE_LIMIT_MAX_PER_MINUTE ?? 0);
   if (Number.isFinite(n) && n > 0) return Math.floor(n);
-  return isProduction() ? 600 : 1200;
+  return isProduction() ? 120 : 1200;
+}
+
+/** Exported for unit testing; also used directly by registerEnrollRateLimit. */
+export function enrollRateLimit(): { max: number; timeWindow: string } {
+  const max = Number(process.env.ENROLL_RATE_MAX ?? (isProduction() ? 10 : 60));
+  const timeWindow = isProduction() ? "1 hour" : "15 minutes";
+  return { max, timeWindow };
+}
+
+/** Exported for unit testing; also used directly by registerAuthRateLimit. */
+export function authRateLimitMax(): number {
+  return Number(process.env.AUTH_LOGIN_RATE_MAX ?? (isProduction() ? 5 : 120));
 }
 
 function isAgentApiPath(url: string): boolean {
@@ -64,10 +77,10 @@ export async function registerSecurityPlugins(app: AppInstance) {
 
 /** Limit agent enrollment attempts per IP (brute-force / flood). */
 export async function registerEnrollRateLimit(app: AppInstance) {
-  const max = Number(process.env.ENROLL_RATE_MAX ?? (isProduction() ? 20 : 60));
+  const { max, timeWindow } = enrollRateLimit();
   await app.register(rateLimit, {
     max,
-    timeWindow: "15 minutes",
+    timeWindow,
     keyGenerator: (req) => `enroll:${req.ip}`,
     errorResponseBuilder: (_req, context) => ({
       statusCode: 429,
@@ -78,10 +91,7 @@ export async function registerEnrollRateLimit(app: AppInstance) {
 }
 
 export async function registerAuthRateLimit(app: AppInstance) {
-  const max = Number(
-    process.env.AUTH_LOGIN_RATE_MAX ??
-      (isProduction() ? 30 : 120),
-  );
+  const max = authRateLimitMax();
   await app.register(rateLimit, {
     max,
     timeWindow: "15 minutes",

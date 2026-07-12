@@ -134,6 +134,7 @@ export async function authRoutes(app: AppInstance) {
     const { email, password } = parsed.data;
     const user = await findUserByLogin(email);
     if (!user || !(await verifyPassword(password, user.passwordHash))) {
+      await audit(user?.id ?? null, "user_login_failed", { email });
       return reply.code(401).send({ error: "invalid_credentials" });
     }
 
@@ -176,10 +177,12 @@ export async function authRoutes(app: AppInstance) {
     }
     const user = await prisma.user.findUnique({ where: { id: payload.sub } });
     if (!user || user.disabled || !user.totpEnabled || !user.totpSecret) {
+      await audit(user?.id ?? null, "user_login_totp_failed");
       return reply.code(401).send({ error: "invalid_credentials" });
     }
     const secret = decryptSecret(user.totpSecret);
     if (!authenticator.check(parsed.data.code, secret)) {
+      await audit(user.id, "user_login_totp_failed");
       return reply.code(401).send({ error: "invalid_totp" });
     }
     const token = await issueSession(reply, user);
@@ -214,6 +217,7 @@ export async function authRoutes(app: AppInstance) {
     }
     const user = await prisma.user.findUnique({ where: { id: payload.sub } });
     if (!user || user.disabled || !user.totpEnabled) {
+      await audit(user?.id ?? null, "user_login_recovery_failed");
       return reply.code(401).send({ error: "invalid_credentials" });
     }
     const codes = await prisma.userRecoveryCode.findMany({
@@ -227,6 +231,7 @@ export async function authRoutes(app: AppInstance) {
       }
     }
     if (!matchedId) {
+      await audit(user.id, "user_login_recovery_failed");
       return reply.code(401).send({ error: "invalid_recovery_code" });
     }
     await prisma.userRecoveryCode.update({
@@ -443,6 +448,7 @@ export async function authRoutes(app: AppInstance) {
     const actor = req.user as { sub: string };
     const user = await prisma.user.findUnique({ where: { id: actor.sub } });
     if (!user || !(await verifyPassword(parsed.data.currentPassword, user.passwordHash))) {
+      await audit(actor.sub, "password_change_failed");
       return reply.code(401).send({ error: "invalid_credentials" });
     }
     await prisma.user.update({
@@ -507,10 +513,12 @@ export async function authRoutes(app: AppInstance) {
       return reply.code(400).send({ error: "totp_not_enabled" });
     }
     if (!(await verifyPassword(parsed.data.currentPassword, user.passwordHash))) {
+      await audit(actor.sub, "totp_disable_failed");
       return reply.code(401).send({ error: "invalid_credentials" });
     }
     const secret = decryptSecret(user.totpSecret);
     if (!authenticator.check(parsed.data.code, secret)) {
+      await audit(actor.sub, "totp_disable_failed");
       return reply.code(401).send({ error: "invalid_totp" });
     }
     await prisma.userRecoveryCode.deleteMany({ where: { userId: user.id } });
@@ -536,10 +544,12 @@ export async function authRoutes(app: AppInstance) {
       return reply.code(400).send({ error: "totp_not_enabled" });
     }
     if (!(await verifyPassword(parsed.data.currentPassword, user.passwordHash))) {
+      await audit(actor.sub, "totp_recovery_regenerate_failed");
       return reply.code(401).send({ error: "invalid_credentials" });
     }
     const secret = decryptSecret(user.totpSecret);
     if (!authenticator.check(parsed.data.code, secret)) {
+      await audit(actor.sub, "totp_recovery_regenerate_failed");
       return reply.code(401).send({ error: "invalid_totp" });
     }
     const recoveryCodes = await generateRecoveryCodes(user.id);

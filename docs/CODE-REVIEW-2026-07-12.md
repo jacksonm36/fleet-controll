@@ -60,21 +60,30 @@ or the intended values were never applied. Since this doc reads like a complianc
 this is worth fixing in one direction or the other — tighten the code to match the doc, or correct
 the doc to match reality.
 
-## 2. [HIGH] Audit logging is documented as shipped but doesn't exist
+## 2. [CORRECTED] Audit logging: my original finding here was wrong
 
-`SECURITY-IMPROVEMENTS.md` claims a comprehensive audit trail (admin changes, agent enrollment,
-patch execution, token generation, auth failures) implemented in `apps/api/src/lib/audit.ts`
-(marked "NEW") and stored in an `AuditEvent` table.
+**Retraction:** the first version of this report claimed audit logging didn't exist, based on
+`grep -rn 'AuditEvent'` returning zero hits. That grep was wrong — it searched for the Prisma
+*model* name (`AuditEvent`, PascalCase), but application code calls the generated Prisma *client*
+accessor, which is camelCase: `prisma.auditEvent.create(...)`. Re-checking with the correct casing
+finds audit logging wired into **19 call sites across 12 files** — `auth.ts`, `users.ts`,
+`agents.ts`, `jobs.ts`, `patch-plans.ts`, `enrollment.ts`, `agent-enroll.ts`, `scripts.ts`,
+`crowdsec-human.ts`, `fleet-agent-tls-rollout.ts`, `agent-delete.ts` — covering logins (each MFA
+method), profile/password changes, TOTP/passkey enrollment, agent enrollment/deletion, job
+approval, patch-plan approve/execute, script runs, and more. `apps/api/src/lib/audit.ts` still
+doesn't exist as a standalone file (the helper is a small inline `audit()` function local to
+`auth.ts`, and other routes call `prisma.auditEvent.create` directly), so that specific file-path
+claim in the doc is still inaccurate, but "audit logging isn't implemented" was false. Apologies
+for the bad grep — flagging this prominently so nothing gets "fixed" based on the wrong premise.
 
-Reality:
-- `apps/api/src/lib/audit.ts` does not exist.
-- `AuditEvent` model exists in `packages/db/prisma/schema.prisma:373` (id, actorId, action, meta,
-  createdAt) but has **zero references** anywhere in `apps/` or `packages/` TypeScript code —
-  nothing ever writes to it.
-
-None of the sensitive operations listed in the doc are actually being audit-logged. This is a
-real compliance/forensics gap, not just a doc typo — worth prioritizing given the system executes
-privileged actions (package upgrades, kernel maintenance) across a fleet of machines.
+**What actually holds up as a real, narrower gap:** every route above logs *successful* sensitive
+actions, but none of the `401 invalid_credentials` / `invalid_totp` / `invalid_recovery_code`
+failure paths in `auth.ts` call `audit()` — e.g. `apps/api/src/routes/auth.ts` lines 137, 179, 217,
+446, 510, 539 all `return reply.code(401)...` with no audit call before them. `SECURITY-IMPROVEMENTS.md`
+specifically lists "Authentication failures" as covered, which isn't accurate — failed login/TOTP/
+recovery/password attempts aren't recorded anywhere, only successes. This matters for detecting
+brute-force/credential-stuffing after the fact. Worth adding `audit(user?.id ?? null,
+"user_login_failed", { reason: ... })` (or similar) at each of those failure points.
 
 ## 3. [MEDIUM — architectural note, not a bug] Controller compromise = fleet-wide code execution
 
@@ -83,8 +92,9 @@ The Go agent's self-update path (`agent/cmd/agent/upgrade.go`: `spawnDetachedBin
 controller push a binary update that the agent writes to disk (0700) and executes. This is
 intentional design (that's how fleet-wide agent updates get distributed), but it means the API
 server is a high-value target: anyone who compromises `apps/api` gets code execution on every
-enrolled host. That raises the stakes on findings #1 and #2 — the component with this much blast
-radius is the one whose hardening turned out to be weaker than documented.
+enrolled host. That raises the stakes on finding #1 (rate limits) and the failed-login-audit gap
+in #2 — the component with this much blast radius is the one whose hardening turned out to be
+weaker than documented in places.
 
 ## 4. [LOW] Duplicate CLI flag parsing in agent/cmd/agent/run.go
 
@@ -114,9 +124,9 @@ premature deletion of `agent/` is warranted yet.
 ## Suggested priority order
 
 1. Fix #0 (broken pending-update detection) — one-line binary-name fix, highest real-world impact.
-2. Fix #2 (audit logging) — either implement it for real or remove the false claim from the doc.
-3. Reconcile #1 (rate limits) — pick the real target numbers and make code match doc (or vice
+2. Reconcile #1 (rate limits) — pick the real target numbers and make code match doc (or vice
    versa).
+3. Add failure-path audit logging per #2's corrected finding (auth.ts's 401 branches).
 4. Track #3 as a standing risk note; not an action item on its own, but context for how much #1/#2
    matter.
 5. #4 is a quick, low-risk cleanup whenever someone is next in `run.go`.

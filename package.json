@@ -12,7 +12,8 @@
     "db:generate": "npm run db:generate --workspace=@fleet/db",
     "db:migrate": "npm run db:migrate --workspace=@fleet/db",
     "db:push": "npm run db:push --workspace=@fleet/db",
-    "db:seed": "npm run db:seed --workspace=@fleet/db"
+    "db:seed": "npm run db:seed --workspace=@fleet/db",
+    "test": "turbo test"
   },
   "devDependencies": {
     "@types/node": "^22.19.19",
